@@ -76,10 +76,13 @@ fi
 # machine's transcription to the wrong GPU. Catch a half-applied install.
 dropin="$HOME/.config/systemd/user/voxtype.service.d/10-gpu.conf"
 if [[ -f $dropin ]]; then
-    if grep -q '@@VK_DEVICE@@' "$dropin"; then
-        F "voxtype GPU pin still has the @@VK_DEVICE@@ placeholder — re-run 16-voxtype-gpu.sh --pin-device N"
+    # Anchor to the directive. The comment above it still names the placeholder
+    # on purpose — that is how a reader learns to change the device — so a bare
+    # grep for @@VK_DEVICE@@ matches a correctly installed file.
+    if grep -qE '^Environment=GGML_VK_VISIBLE_DEVICES=[0-9]+$' "$dropin"; then
+        P "voxtype GPU pin: $(grep -oE 'GGML_VK_VISIBLE_DEVICES=[0-9]+$' "$dropin")"
     else
-        P "voxtype GPU pin: $(grep -o 'GGML_VK_VISIBLE_DEVICES=[0-9]*' "$dropin")"
+        F "voxtype GPU pin not substituted — re-run 16-voxtype-gpu.sh --pin-device N"
     fi
 elif command -v voxtype >/dev/null 2>&1; then
     S "voxtype installed but no GPU pin (ggml will take device 0)"
