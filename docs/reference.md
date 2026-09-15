@@ -31,7 +31,7 @@ Built against **Omarchy v4.0.3** (`omacom/omarchy`, branch `quattro`).
 sudo ./10-omarchy4-packages.sh   # packages — the only step needing your password
 ./13-omarchy4-fonts.sh           # icon fonts, downloads ~2.3 MB
 ./11-omarchy4-deploy.sh          # config — idempotent, safe to re-run
-./12-omarchy4-verify.sh          # 52 assertions, changes nothing
+./12-omarchy4-verify.sh          # 60 assertions, changes nothing
 ```
 
 Then start Hyprland (`start-hyprland` from a TTY, or pick it at the display
@@ -112,7 +112,7 @@ All of it works on tiled *and* floating windows.
 ```
 10-omarchy4-packages.sh      apt packages (sudo)
 11-omarchy4-deploy.sh        generate + patch + deploy config
-12-omarchy4-verify.sh        52 assertions, changes nothing
+12-omarchy4-verify.sh        60 assertions, changes nothing
 13-omarchy4-fonts.sh         icon fonts (downloads)
 14-omarchy4-extras.sh        Voxtype + OSD, LocalSend
 15-nvidia-offload.sh         NVIDIA driver + CUDA (sudo, reboot)
@@ -891,7 +891,7 @@ Undo: `rm -rf ~/.local/share/fonts/NerdFontsSymbols ~/.local/share/fonts/omarchy
 10-omarchy4-packages.sh    apt packages (sudo)
 13-omarchy4-fonts.sh       icon fonts
 11-omarchy4-deploy.sh      generate + deploy config
-12-omarchy4-verify.sh      52 assertions
+12-omarchy4-verify.sh      60 assertions
 lib/
   generate-kali-menu.py    builds the Kali menu from Kali's metadata
   hide-kali-from-apps.py   Apps dedup (reversible)
