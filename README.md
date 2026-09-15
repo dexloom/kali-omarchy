@@ -95,11 +95,15 @@ safely.
 | `12-omarchy4-verify.sh` | no | 52 assertions; changes nothing |
 | `14-omarchy4-extras.sh` | part | Voxtype + OSD (no root), LocalSend `.deb` (root) |
 | `15-nvidia-offload.sh` | **yes** | proprietary NVIDIA driver for compute, then **reboot** |
-| `16-voxtype-gpu.sh` | no | swaps Voxtype to the Vulkan (or `--cuda`) build |
+| `16-voxtype-gpu.sh` | no | swaps Voxtype to the Vulkan (or `--cuda`) build; `--pin-device N` pins the GPU |
 | `17-lock-pam.sh` | **yes** | Debian PAM stack for the lock screen |
 
 Minimum viable order is `10 → 13 → 11 → 12`. Steps 14–17 are optional;
 15 and 16 are hardware-specific (see [Hardware](#hardware)).
+
+Nothing under `config/` is applied by hand. Every shipped file is installed by
+one of these steps and asserted by `12-omarchy4-verify.sh`, so a file that is
+shipped but never installed is a bug, not a convention.
 
 `12-omarchy4-verify.sh` is the contract. It needs no sudo, changes nothing, and
 is the single instruction that tells an agent whether it is done. **An agent
@@ -157,7 +161,8 @@ iGPU driving the display and an NVIDIA MX350 available for compute only, and
 they carry that machine's measurements in their comments:
 
 - `LIBVA_DRIVER_NAME=iHD` — correct for Intel, wrong for AMD
-- `GGML_VK_VISIBLE_DEVICES=1` — the device index is machine-specific
+- The Vulkan device index is machine-specific — `16-voxtype-gpu.sh --pin-device N`,
+  never a shipped default
 - Voxtype model choice assumes 2 GB of VRAM (`small` fits; `large-v3-turbo` OOMs)
 
 Read those two scripts before running them. Skip both if you have no discrete

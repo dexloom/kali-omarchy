@@ -4,6 +4,8 @@
 #
 #   ./16-voxtype-gpu.sh            # Vulkan build (default)
 #   ./16-voxtype-gpu.sh --cuda     # ONNX + CUDA build
+#   ./16-voxtype-gpu.sh --pin-device N
+#                                  # only write the Vulkan device pin, no download
 #
 # The AVX-512 build installed by 14-omarchy4-extras.sh is CPU-only by design;
 # upstream ships GPU support as separate binaries. This fetches one, keeps the
@@ -18,7 +20,18 @@ set -euo pipefail
 VOXTYPE_VERSION="${VOXTYPE_VERSION:-1.0.1}"
 BASE="https://github.com/peteonrails/voxtype/releases/download/v${VOXTYPE_VERSION}"
 MODE="vulkan"
-[[ ${1:-} == "--cuda" ]] && MODE="cuda"
+PIN_ONLY=""
+PIN_DEVICE=""
+PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DROPIN="$HOME/.config/systemd/user/voxtype.service.d/10-gpu.conf"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --cuda)       MODE="cuda"; shift ;;
+        --pin-device) PIN_DEVICE="${2:-}"; PIN_ONLY=1; shift 2 ;;
+        *)            shift ;;
+    esac
+done
 
 say()  { printf '\033[1;34m::\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m ✓\033[0m %s\n' "$*"; }
@@ -26,6 +39,30 @@ warn() { printf '\033[1;33m !\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m ✗\033[0m %s\n' "$*" >&2; exit 1; }
 
 export PATH="$HOME/.local/bin:$PATH"
+
+# Pin voxtype's Vulkan backend to a specific device. This is NOT shipped
+# pre-filled: ggml_vulkan's device order is per-machine, and pinning a stranger's
+# laptop to index 1 would silently send the work to the wrong GPU — or to no GPU
+# at all. The template in config/ carries the measurements that justify pinning;
+# the index itself has to come from the machine.
+write_pin() {
+    local dev="$1" template="$PROJECT/config/systemd/voxtype.service.d/10-gpu.conf"
+    [[ $dev =~ ^[0-9]+$ ]] || die "--pin-device takes a device index, got: '$dev'"
+    [[ -f $template ]] || die "missing template: $template"
+    mkdir -p "$(dirname "$DROPIN")"
+    # `&&` alone would abort under `set -e` when there is no file to back up.
+    if [[ -f $DROPIN ]]; then cp "$DROPIN" "$DROPIN.bak-$(date +%Y%m%d-%H%M%S)"; fi
+    sed "s/@@VK_DEVICE@@/$dev/" "$template" >"$DROPIN"
+    systemctl --user daemon-reload 2>/dev/null || true
+    systemctl --user restart voxtype.service 2>/dev/null || warn "voxtype restart failed"
+    ok "pinned GGML_VK_VISIBLE_DEVICES=$dev  ($DROPIN)"
+}
+
+if [[ -n $PIN_ONLY ]]; then
+    write_pin "$PIN_DEVICE"
+    exit 0
+fi
+
 command -v voxtype >/dev/null || die "voxtype not installed — run 14-omarchy4-extras.sh first"
 
 # ── Confirm the GPU is actually usable before swapping anything ───────────
@@ -99,6 +136,16 @@ say "Acceleration report"
 voxtype info accel 2>&1 | head -12 | sed 's/^/  /'
 echo
 voxtype info variants 2>&1 | sed -n '/Hardware/,/^$/p' | sed 's/^/  /'
+
+if [[ ! -f $DROPIN ]]; then
+    echo
+    warn "no Vulkan device pin is set. With more than one Vulkan device, ggml"
+    warn "picks index 0 — usually the integrated GPU, which is often the slower"
+    warn "one. Check which devices exist and what they are:"
+    echo "      journalctl --user -u voxtype -n 50 | grep -i vulkan"
+    echo "  then pin the one you want (and MEASURE, do not trust the flags):"
+    echo "      $PROJECT/16-voxtype-gpu.sh --pin-device N"
+fi
 
 cat <<'NEXT'
 

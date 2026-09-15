@@ -56,6 +56,44 @@ check_link "$HOME/.config/omarchy/extensions/omarchy-menu.jsonc" "$PROJECT/confi
 check_link "$HOME/.config/omarchy/bar/scripts"                   "$PROJECT/config/omarchy/bar/scripts"
 check_link "$HOME/.config/hypr/omarchy4.lua"                     "$PROJECT/config/hypr/omarchy4.lua"
 
+H "Config wiring"
+# Everything shipped under config/ must be installed by a numbered script.
+# Anything shipped and never installed is documentation pretending to be
+# configuration: it reads as supported, and silently is not.
+
+# omarchy4.lua runs `systemctl --user start hyprland-session.target` on every
+# session start. Without the unit that command fails silently and every unit
+# bound to graphical-session.target stays enabled but never runs.
+if grep -q "hyprland-session.target" "$PROJECT/config/hypr/omarchy4.lua" 2>/dev/null; then
+    if [[ -e $HOME/.config/systemd/user/hyprland-session.target ]]; then
+        P "hyprland-session.target installed (omarchy4.lua starts it)"
+    else
+        F "omarchy4.lua starts hyprland-session.target but the unit is not installed"
+    fi
+fi
+
+# The voxtype GPU pin is a template: a fixed device index would send another
+# machine's transcription to the wrong GPU. Catch a half-applied install.
+dropin="$HOME/.config/systemd/user/voxtype.service.d/10-gpu.conf"
+if [[ -f $dropin ]]; then
+    if grep -q '@@VK_DEVICE@@' "$dropin"; then
+        F "voxtype GPU pin still has the @@VK_DEVICE@@ placeholder — re-run 16-voxtype-gpu.sh --pin-device N"
+    else
+        P "voxtype GPU pin: $(grep -o 'GGML_VK_VISIBLE_DEVICES=[0-9]*' "$dropin")"
+    fi
+elif command -v voxtype >/dev/null 2>&1; then
+    S "voxtype installed but no GPU pin (ggml will take device 0)"
+fi
+
+# Chromium flags only survive in /etc/chromium.d/ — see the file's own header.
+if command -v chromium >/dev/null 2>&1; then
+    if [[ -f /etc/chromium.d/vaapi ]]; then
+        P "chromium VA-API flags installed"
+    else
+        F "chromium present but /etc/chromium.d/vaapi missing — re-run 10-omarchy4-packages.sh"
+    fi
+fi
+
 H "Kali menu"
 # Validate against the MERGED menu (Omarchy's default + our extension), not the
 # extension alone. A row may legitimately parent onto a submenu that only

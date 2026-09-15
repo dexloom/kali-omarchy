@@ -8,6 +8,11 @@
 # the snapshot in backups/pre-omarchy4-* is your way back.
 set -euo pipefail
 
+# Derive the project root from this script, so the repo works wherever it is
+# cloned. Resolved before the root check, because `sudo` changes $HOME but not
+# the script's own location.
+PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 if [[ $EUID -ne 0 ]]; then
     echo "This script needs root. Run: sudo $0"
     exit 1
@@ -86,6 +91,18 @@ apt-get install -y -qq --no-install-recommends "${pkgs[@]}"
 if ! command -v lua >/dev/null 2>&1 && command -v lua5.4 >/dev/null 2>&1; then
     ln -sf "$(command -v lua5.4)" /usr/local/bin/lua
     echo "linked /usr/local/bin/lua -> $(command -v lua5.4)"
+fi
+
+# Chromium VA-API has to be a root-owned file in /etc/chromium.d/: Debian's
+# /usr/bin/chromium launcher resets CHROMIUM_FLAGS near the top, wiping
+# anything exported in the environment, then sources that directory to build
+# the flag list. A desktop-file override does not help either, since
+# omarchy-launch-browser takes only the binary out of Exec= and drops flags.
+# Installed here because this is the step that has root; inert if Chromium is
+# never used. The file itself documents how to check it worked.
+if [[ -f $PROJECT/config/etc/chromium.d-vaapi ]] && [[ -d /etc/chromium.d ]]; then
+    install -m644 "$PROJECT/config/etc/chromium.d-vaapi" /etc/chromium.d/vaapi
+    echo "installed /etc/chromium.d/vaapi (Chromium hardware video decode)"
 fi
 
 echo

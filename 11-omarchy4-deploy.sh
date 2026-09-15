@@ -303,6 +303,18 @@ if [[ -f $PROJECT/config/systemd/xdg-desktop-portal-gtk.service.d/10-wait-for-se
     systemctl --user daemon-reload 2>/dev/null || true
 fi
 
+# config/hypr/omarchy4.lua runs `systemctl --user start hyprland-session.target`
+# on every session start, so the unit has to exist or that command fails
+# silently and every unit bound to graphical-session.target — voxtype among
+# them — stays enabled but never runs. It is inert under uwsm, which activates
+# graphical-session.target itself; it only does work on the hand-started TTY
+# path, which is exactly the path that needs it.
+if [[ -f $PROJECT/config/systemd/hyprland-session.target ]]; then
+    link "$PROJECT/config/systemd/hyprland-session.target" \
+         "$HOME/.config/systemd/user/hyprland-session.target"
+    systemctl --user daemon-reload 2>/dev/null || true
+fi
+
 # ── 3c. Hide Kali tools from the Apps launcher ────────────────────────────
 # Kali ships a kali-*.desktop for nearly every tool, which buries the ordinary
 # applications in Apps. The generated Kali menu already lists them all.
