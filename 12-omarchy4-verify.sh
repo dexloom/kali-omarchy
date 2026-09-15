@@ -419,6 +419,19 @@ if command -v hyprctl >/dev/null && hyprctl version >/dev/null 2>&1; then
     pgrep -f 'quickshell.*omarchy' >/dev/null \
         && P "omarchy shell process is up" \
         || F "omarchy shell not running (journalctl -t omarchy-shell -n 50)"
+
+    # A stuck invisible cursor is invisible in every sense: nothing logs it,
+    # and the only symptom is that the mouse pointer is gone for the rest of
+    # the session. The screensaver hides the pointer while it runs, so this
+    # only means anything when no screensaver is up.
+    if ! pgrep -f '[o]rg.omarchy.screensaver' >/dev/null \
+       && ! pgrep -f 'kali-screensaver' >/dev/null; then
+        if [[ $(hyprctl getoption cursor:invisible 2>/dev/null | head -1) == *true* ]]; then
+            F "mouse pointer is hidden with no screensaver running — fix: hyprctl eval 'hl.config({ cursor = { invisible = false } })'"
+        else
+            P "mouse pointer not left hidden"
+        fi
+    fi
 else
     S "not inside a Hyprland session — bind and shell checks deferred"
 fi

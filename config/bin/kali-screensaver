@@ -1557,13 +1557,32 @@ def run(opts):
             elif wait:
                 time.sleep(wait)
     finally:
-        if opts.mouse:
-            out.write("\x1b[?1006l\x1b[?1003l")
-        out.write("\x1b[0m\x1b[?25h\x1b[?1049l")
-        out.flush()
-        if old_term is not None:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
+        # The pointer comes back FIRST, and unconditionally.
+        #
+        # By the time this runs the terminal is often already dead:
+        # omarchy-system-lock dismisses the screensaver with
+        # `pkill -f '[o]rg.omarchy.screensaver'`, and the process carrying
+        # that string on its command line is the TERMINAL, not this renderer.
+        # The terminal goes, the pty goes with it, and the writes below raise
+        # on a closed descriptor. With the compositor call last, that
+        # exception skipped it and left the mouse pointer hidden for the whole
+        # session — a screensaver that eats your cursor when you lock the
+        # screen. Restoring the pointer must not depend on a terminal that may
+        # no longer exist, and every step here is independent so that one
+        # failure cannot swallow the rest.
         set_cursor_invisible(False)
+        try:
+            if opts.mouse:
+                out.write("\x1b[?1006l\x1b[?1003l")
+            out.write("\x1b[0m\x1b[?25h\x1b[?1049l")
+            out.flush()
+        except Exception:
+            pass
+        if old_term is not None:
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
+            except Exception:
+                pass
 
 
 def parse_size(text):
@@ -1626,6 +1645,9 @@ def main(argv=None):
     try:
         run(opts)
     finally:
+        # Belt and braces: idempotent, and covers a sibling instance that was
+        # killed hard enough to skip its own teardown.
+        set_cursor_invisible(False)
         if not opts.no_kill:
             kill_siblings()
     return 0
