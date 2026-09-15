@@ -346,6 +346,55 @@ else
     F "/etc/pam.d/omarchy-lock-password missing — the screen will never lock (run 17-lock-pam.sh)"
 fi
 
+H "Screensaver"
+# Omarchy's screensaver needs ttfx (AUR, no Debian equivalent) and a terminal
+# that can be given a window class. Neither holds here, so patch 0003 points
+# the launcher at this repo's renderer and at a terminal that is installed.
+# Each check below is a separate way the feature can be silently absent.
+if [[ -x $HOME/.local/bin/kali-screensaver ]]; then
+    P "kali-screensaver on PATH"
+    # Actually draw a frame. "The file is present" says nothing about whether
+    # the renderer runs on this box's Python.
+    if out=$("$HOME/.local/bin/kali-screensaver" --still 0.1 --size 60x18 2>&1) \
+       && [[ -n $out ]]; then
+        P "kali-screensaver renders a frame"
+    else
+        F "kali-screensaver failed to render: ${out:-no output}"
+    fi
+else
+    F "kali-screensaver not installed — re-run 11-omarchy4-deploy.sh"
+fi
+
+launcher="$OMARCHY/bin/omarchy-launch-screensaver"
+if [[ -f $launcher ]]; then
+    if grep -q "kali-screensaver" "$launcher"; then
+        P "omarchy-launch-screensaver patched (0003)"
+    else
+        F "omarchy-launch-screensaver still expects ttfx — patch 0003 did not apply"
+    fi
+fi
+
+# The launcher needs a terminal it can hand a window class to, or the
+# org.omarchy.screensaver fullscreen rule never matches. qterminal cannot.
+scr_term=""
+for t in kitty alacritty foot ghostty; do
+    if command -v "$t" >/dev/null 2>&1; then scr_term=$t; break; fi
+done
+if [[ -n $scr_term ]]; then
+    P "screensaver terminal available: $scr_term"
+else
+    F "no class-capable terminal installed (kitty/alacritty/foot/ghostty)"
+fi
+
+# The dragon is drawn from Kali's own logo file. Missing is not fatal — the
+# renderer falls back to its built-in dragon — but it is worth reporting,
+# because the fallback is not the real mark.
+if ls /usr/share/images/kali-logos/logo-*.png >/dev/null 2>&1; then
+    P "Kali logo present (dragon drawn from the real mark)"
+else
+    S "Kali logo not found — screensaver falls back to its built-in dragon"
+fi
+
 H "Live session"
 # Resolve the live compositor ourselves rather than trusting the caller's env.
 # Hyprland leaves an instance directory behind for every session that has run,

@@ -1,0 +1,1553 @@
+#!/usr/bin/env python3
+"""
+kali-screensaver — the Kali dragon burns a castle, in ASCII.
+
+Omarchy's own screensaver shells out to `ttfx`, an AUR package with no Debian
+equivalent, so on Kali `omarchy-launch-screensaver` exits 1 and nothing ever
+draws. This is a replacement rather than a port: a scene animation instead of
+a text-effect engine, so it owes ttfx nothing.
+
+Standard library only, no curses. The whole frame is one write() to stdout,
+which is both faster and less flickery than curses' cell diffing for a canvas
+that changes almost everywhere on every frame.
+
+Runs inside the terminal that `omarchy-launch-screensaver` spawns. Exits on
+any keystroke or mouse movement, then tears down every sibling screensaver
+window the way omarchy-screensaver does.
+"""
+
+import argparse
+import math
+import os
+import random
+import select
+import signal
+import subprocess
+import sys
+import struct
+import termios
+import time
+import tty
+import zlib
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Art
+#
+# Sprites are plain text. Two characters are markers, not ink: they record a
+# coordinate and are erased before drawing. That keeps anchor points attached
+# to the art itself, so editing the art cannot silently desynchronise them:
+#
+#   %  the eye          (glows, and catches the firelight)
+#   @  the maw          (where the fire comes out)
+#
+# Only Block Elements (U+2580–259F) and ASCII are used. Those are present in
+# every monospace font worth running a terminal in; the geometric-shape
+# characters that would draw nicer teeth are not, and a missing glyph in a
+# fullscreen animation is very loud.
+# ─────────────────────────────────────────────────────────────────────────────
+
+DRAGON_ART = """\
+   ▄█▄
+    ▀██▄         ▄█▄
+      ▀██▄        ▀██▄
+        ▀██▄        ▀██▄
+      ▄▄▄▄▄███▄▄▄▄▄▄▄███▄▄
+    ▄█████████████████████████▄▄▄▄
+   ▐█████%████████████████████████████▄▄▄
+   ▐████████████████████████████████████████▄▄
+   ▐█████████████████▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+    ▀██████████████▀ ▀  ▀   ▀   ▀   ▀   ▀
+      ▐██████████▀ @
+      ▐████████▓▓▛
+       ▀█████▓▓▙▄▄   ▄   ▄   ▄   ▄
+        ▐████████████████▄▄▄▄▄▄▄
+       ▄▟████████████████████████▀▀▀
+      ▐█████████▓▓▓▀▀
+      ▐████████▓▓▓▌
+       ▐███████▓▓▓▌
+        ▐██████▓▓▓▌
+        ▐██████▓▓▓▌
+       ▐███████▓▓▓▌
+      ▄████████▓▓▓▓▄
+"""
+
+CASTLE_ART = """\
+                                       ▄
+                     ▄                ███
+                    ███              ▐███▌
+                   ▐███▌             ▐███▌
+           ▄      ▄█████▄            ▐███▌
+          ███    ▐█▀█▀█▀█▌          ▄▄█████▄▄
+         ▐███▌   ▐███████▌         ▐█▀█▀█▀█▀█▌
+        ▄█████▄  ▐██w█w██▌         ▐█████████▌
+       ▐█▀█▀█▀█▌ ▐███████▌         ▐██w███w██▌
+       ▐███████▙▄▟███████▙▄▄▄▄▄▄▄▄▄▟█████████▌
+       ▐█▀█▀█▀█▀█▀█▀█▀█▀█▀█▀█▀█▀█▀█▀█▀█▀█▀█▀█▌
+       ▐█████████████████████████████████████▌
+       ▐███w█████████w██████████w████████w███▌
+       ▐██████████████████w█w████████████████▌
+       ▐███████████████████ddd███████████████▌
+       ▐███████████████████ddd███████████████▌
+"""
+
+# The wordmark. Small, dim, and bottom-left under the dragon — the scene is
+# the branding, this just signs it.
+WORDMARK_ART = """\
+█  █   ██   █     ███
+█ █   █  █  █      █
+██    ████  █      █
+█ █   █  █  █      █
+█  █  █  █  ████  ███
+"""
+
+# A small moon. A disc rather than a crescent: at four cells across, the
+# notch that makes a crescent reads as a rendering glitch instead.
+MOON_ART = """\
+ ▄▄▄
+▐███▌
+ ▀▀▀
+"""
+
+MOUTH_MARK = "@"
+EYE_MARK = "%"
+WINDOW_MARK = "w"
+GATE_MARK = "d"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Kali's dragon
+#
+# Drawn from Kali's own logo file rather than from art copied into this repo.
+# Two reasons: it is the real mark, redrawn at whatever size the terminal
+# gives us instead of pinned to one hand-traced size, and the artwork stays
+# Kali's — the repo ships no copy of it. If the file is missing (this running
+# somewhere that is not Kali) DRAGON_ART above is used instead.
+# ─────────────────────────────────────────────────────────────────────────────
+
+LOGO_PATHS = (
+    "/usr/share/images/kali-logos/logo-256.png",
+    "/usr/share/images/kali-logos/logo-128.png",
+    "/usr/share/kali-defaults/web/images/kali-logo.png",
+    "/usr/share/pixmaps/kali-logo.png",
+)
+
+# 2x2 sub-cell coverage -> Block Element. Quadrants double the effective
+# resolution of the canvas, which is the difference between a dragon's head
+# reading as a head and reading as a smudge.
+QUADRANTS = {
+    (0, 0, 0, 0): " ", (0, 0, 0, 1): "▗", (0, 0, 1, 0): "▖", (0, 0, 1, 1): "▄",
+    (0, 1, 0, 0): "▝", (0, 1, 0, 1): "▐", (0, 1, 1, 0): "▞", (0, 1, 1, 1): "▟",
+    (1, 0, 0, 0): "▘", (1, 0, 0, 1): "▚", (1, 0, 1, 0): "▌", (1, 0, 1, 1): "▙",
+    (1, 1, 0, 0): "▀", (1, 1, 0, 1): "▜", (1, 1, 1, 0): "▛", (1, 1, 1, 1): "█",
+}
+
+# Kali's mark is a blue gradient. Light along the crest, deep at the tail.
+KALI_LIGHT = (128, 206, 255)
+KALI_DEEP = (26, 88, 170)
+
+
+def decode_png(path):
+    """Minimal PNG reader: 8-bit, non-interlaced, any colour type.
+
+    Written out rather than pulled from Pillow because the whole point of
+    this script is that it runs on a stock box with nothing installed.
+    """
+    data = open(path, "rb").read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG")
+    pos, idat, ihdr = 8, [], None
+    while pos + 8 <= len(data):
+        ln = struct.unpack(">I", data[pos:pos + 4])[0]
+        typ = data[pos + 4:pos + 8]
+        if typ == b"IHDR":
+            ihdr = struct.unpack(">IIBBBBB", data[pos + 8:pos + 8 + ln])
+        elif typ == b"IDAT":
+            idat.append(data[pos + 8:pos + 8 + ln])
+        elif typ == b"IEND":
+            break
+        pos += 12 + ln
+    if ihdr is None:
+        raise ValueError("no IHDR")
+    w, h, depth, ctype, _comp, _filt, interlace = ihdr
+    if depth != 8 or interlace:
+        raise ValueError("unsupported PNG (depth=%d interlace=%d)"
+                         % (depth, interlace))
+    nch = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(ctype)
+    if nch is None:
+        raise ValueError("unsupported colour type %d" % ctype)
+
+    raw = zlib.decompress(b"".join(idat))
+    stride = w * nch
+    out = bytearray(h * stride)
+    prev = bytearray(stride)
+    p = 0
+    for y in range(h):
+        f = raw[p]
+        p += 1
+        line = bytearray(raw[p:p + stride])
+        p += stride
+        if f == 1:
+            for i in range(nch, stride):
+                line[i] = (line[i] + line[i - nch]) & 255
+        elif f == 2:
+            for i in range(stride):
+                line[i] = (line[i] + prev[i]) & 255
+        elif f == 3:
+            for i in range(stride):
+                a = line[i - nch] if i >= nch else 0
+                line[i] = (line[i] + ((a + prev[i]) >> 1)) & 255
+        elif f == 4:
+            for i in range(stride):
+                a = line[i - nch] if i >= nch else 0
+                b = prev[i]
+                c = prev[i - nch] if i >= nch else 0
+                pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+                pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                line[i] = (line[i] + pr) & 255
+        out[y * stride:(y + 1) * stride] = line
+        prev = line
+    return w, h, nch, ctype, bytes(out)
+
+
+class Logo:
+    """The dragon half of Kali's logo, as a 1-byte-per-pixel mask."""
+
+    __slots__ = ("mask", "w", "h", "snout", "eye")
+
+    def __init__(self, mask, w, h, snout, eye):
+        self.mask = mask
+        self.w = w
+        self.h = h
+        self.snout = snout      # fractions of the bounding box, not pixels,
+        self.eye = eye          # so they survive being drawn at any size
+
+
+def load_logo(paths=LOGO_PATHS):
+    for path in paths:
+        try:
+            if os.path.exists(path):
+                logo = _read_logo(path)
+                if logo is not None:
+                    return logo
+        except Exception:
+            continue
+    return None
+
+
+def _read_logo(path):
+    w, h, nch, ctype, px = decode_png(path)
+
+    if ctype in (4, 6):                      # alpha channel carries the shape
+        off, stride = nch - 1, nch
+        def is_ink(x, y):
+            return px[(y * w + x) * stride + off] > 110
+    else:                                    # opaque: ink is whatever is dark
+        stride = nch
+        def is_ink(x, y):
+            i = (y * w + x) * stride
+            return (px[i] + px[i + 1] + px[i + 2]) / 3 < 128 if nch >= 3 \
+                else px[i] < 128
+
+    col_has_ink = [any(is_ink(x, y) for y in range(h)) for x in range(w)]
+    if not any(col_has_ink):
+        return None
+
+    # The shipped logo file is the dragon AND the "KALI" wordmark side by
+    # side. Split on the widest interior column of whitespace rather than at
+    # a hardcoded x: the same rule holds for every size of the file.
+    runs, start = [], None
+    for x, on in enumerate(col_has_ink):
+        if not on and start is None:
+            start = x
+        elif on and start is not None:
+            if start > 0:
+                runs.append((x - start, start))
+            start = None
+    cut = max(runs)[1] if runs else w
+
+    xs = [x for x in range(cut) if col_has_ink[x]]
+    ys = [y for y in range(h) if any(is_ink(x, y) for x in range(cut))]
+    if not xs or not ys:
+        return None
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    mw, mh = x1 - x0 + 1, y1 - y0 + 1
+
+    mask = [bytearray(mw) for _ in range(mh)]
+    for y in range(mh):
+        row = mask[y]
+        for x in range(mw):
+            if is_ink(x0 + x, y0 + y):
+                row[x] = 1
+
+    # The snout is the rightmost ink in the TOP of the mark. Not the rightmost
+    # ink overall: the tail sweeps further right than the head does, and
+    # aiming the fire from there points it out of the dragon's backside.
+    snout = (0.92, 0.45)
+    band = int(mh * 0.55)
+    found = None
+    for x in range(mw - 1, -1, -1):
+        for y in range(band):
+            if mask[y][x]:
+                found = (x, y)
+                break
+        if found:
+            break
+    if found:
+        snout = (found[0] / mw, found[1] / mh)
+
+    # The eye is a small enclosed gap inside the head — ink above, below and
+    # to both sides. Finding it beats measuring it: it then lands correctly
+    # whichever of Kali's logo files is installed.
+    eye = (snout[0] - 0.09, snout[1] - 0.11)
+    if found:
+        sx, sy = found
+        hx0, hy0 = max(0, sx - int(mw * 0.13)), max(0, sy - int(mh * 0.16))
+        pts = []
+        for y in range(hy0, min(mh, sy + 3)):
+            row = mask[y]
+            for x in range(hx0, sx):
+                if row[x]:
+                    continue
+                if not any(row[:x]) or not any(row[x + 1:sx + 1]):
+                    continue
+                if not any(mask[yy][x] for yy in range(hy0, y)):
+                    continue
+                if not any(mask[yy][x] for yy in range(y + 1, min(mh, sy + 4))):
+                    continue
+                pts.append((x, y))
+        if pts:
+            eye = (sum(q[0] for q in pts) / len(pts) / mw,
+                   sum(q[1] for q in pts) / len(pts) / mh)
+    return Logo(mask, mw, mh, snout, eye)
+
+
+def rasterize_logo(logo, cols, rows, thresh=0.17):
+    """Draw the mask into `rows` lines of `cols` quadrant-block characters."""
+    mask, mw, mh = logo.mask, logo.w, logo.h
+    sw, sh = cols * 2, rows * 2
+    xedge = [(x * mw) // sw for x in range(sw + 1)]
+    yedge = [(y * mh) // sh for y in range(sh + 1)]
+    sub = []
+    for sy in range(sh):
+        y0 = yedge[sy]
+        y1 = max(y0 + 1, yedge[sy + 1])
+        line = bytearray(sw)
+        for sx in range(sw):
+            x0 = xedge[sx]
+            x1 = max(x0 + 1, xedge[sx + 1])
+            ink = 0
+            for yy in range(y0, y1):
+                ink += sum(mask[yy][x0:x1])
+            if ink >= (y1 - y0) * (x1 - x0) * thresh:
+                line[sx] = 1
+        sub.append(line)
+    grid = []
+    for r in range(rows):
+        top, bot = sub[r * 2], sub[r * 2 + 1]
+        grid.append([QUADRANTS[(top[c * 2], top[c * 2 + 1],
+                                bot[c * 2], bot[c * 2 + 1])]
+                     for c in range(cols)])
+    return grid
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Palettes
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Kali's dragon is blue. Three tones, picked by glyph: solid blocks are body,
+# the half-blocks that form a silhouette's edge catch the rim light, and the
+# shade blocks are the parts turned away.
+DRAGON_RIM = (126, 196, 255)
+DRAGON_BODY = (40, 110, 196)
+DRAGON_DEEP = (16, 46, 92)
+
+CASTLE_RIM = (118, 130, 150)
+CASTLE_BODY = (54, 62, 78)
+CASTLE_DEEP = (26, 30, 42)
+
+GROUND_RIM = (52, 46, 40)
+GROUND_BODY = (28, 25, 22)
+
+WINDOW_LIT = (255, 176, 58)
+GATE_DARK = (14, 12, 12)
+
+FIRELIGHT = (255, 148, 52)
+
+# Heat 0 → 1. Black at the bottom because the low end is sky: anything that
+# faint must vanish rather than fog the scene.
+# Weighted toward the low end on purpose. The breath leaves the maw at 1.0
+# and reaches the castle at about 0.45, so a palette spread evenly over 0..1
+# renders four fifths of the plume in dark red and the fire looks like it is
+# going out halfway across the screen.
+FIRE_STOPS = [
+    (0.00, (0, 0, 0)),
+    (0.10, (60, 10, 3)),
+    (0.20, (130, 24, 5)),
+    (0.32, (196, 52, 8)),
+    (0.45, (238, 96, 14)),
+    (0.58, (255, 146, 26)),
+    (0.72, (255, 190, 58)),
+    (0.86, (255, 232, 140)),
+    (1.00, (255, 252, 230)),
+]
+
+# Heat → glyph. Dots at the fringe and solid blocks in the core: fire has a
+# grainy edge and an opaque middle, and one ramp of blocks alone reads as a
+# gradient rather than as flame.
+FIRE_RAMP = [
+    (0.200, " "),
+    (0.255, "."),
+    (0.270, ":"),
+    (0.370, "░"),
+    (0.510, "▒"),
+    (0.680, "▓"),
+    (2.000, "█"),
+]
+
+SMOKE_TONES = [(46, 44, 48), (64, 61, 66), (82, 78, 84)]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Choreography
+#
+# One loop of the story, in seconds. The dragon is idle, draws breath, burns
+# the castle, and the fire dies back down — then it happens again.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# How much of the breath survives the crossing to the castle, and the total
+# subtractive loss over that same distance. Both are budgets for the whole
+# journey, not per-column rates — see Scene.resize.
+ARRIVING = 0.90
+JET_SUB_BUDGET = 0.05
+# How far the plume opens up, in rows of spread over the whole crossing —
+# NOT a per-column rate. Diffusion accumulates, so a fixed per-column
+# coefficient opens the jet into a cloud on a wide screen and leaves it a
+# needle on a narrow one.
+JET_SPREAD_ROWS = 5.0
+
+# The visual gap between the dragon's jaw and the castle wall. Bounded at both
+# ends: below GAP_MIN the two sprites crowd each other, and above GAP_MAX a
+# wide terminal pushes them into opposite corners with a lake of empty sky in
+# between. Past GAP_MAX the whole composition is centred instead of stretched.
+GAP_MIN, GAP_MAX = 10, 22
+
+# How much of the width the dragon takes, and how much taller a character
+# cell is than it is wide. The second is what keeps the logo from coming out
+# squashed: a sprite measured in cells needs half as many rows as the pixel
+# aspect implies.
+DRAGON_WIDTH = 0.52
+CELL_ASPECT = 2.0
+
+PHASES = [("calm", 5.5), ("inhale", 1.8), ("blast", 6.0), ("burn", 6.6)]
+CYCLE = sum(d for _, d in PHASES)
+
+
+def phase_at(t):
+    """Return (name, elapsed, duration) for the phase covering loop time t."""
+    t %= CYCLE
+    for name, dur in PHASES:
+        if t < dur:
+            return name, t, dur
+        t -= dur
+    name, dur = PHASES[-1]
+    return name, dur, dur
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_fire_lut(n=128):
+    lut = []
+    for i in range(n):
+        h = i / (n - 1)
+        for j in range(len(FIRE_STOPS) - 1):
+            h0, c0 = FIRE_STOPS[j]
+            h1, c1 = FIRE_STOPS[j + 1]
+            if h <= h1 or j == len(FIRE_STOPS) - 2:
+                f = 0.0 if h1 == h0 else (h - h0) / (h1 - h0)
+                f = 0.0 if f < 0 else (1.0 if f > 1 else f)
+                lut.append((
+                    int(c0[0] + (c1[0] - c0[0]) * f),
+                    int(c0[1] + (c1[1] - c0[1]) * f),
+                    int(c0[2] + (c1[2] - c0[2]) * f),
+                ))
+                break
+    return lut
+
+
+FIRE_LUT = build_fire_lut()
+FIRE_LUT_MAX = len(FIRE_LUT) - 1
+
+
+def fire_glyph(h):
+    for limit, ch in FIRE_RAMP:
+        if h < limit:
+            return ch
+    return "█"
+
+
+def parse_sprite(art, markers=""):
+    """Split art into a char grid plus the coordinates of any marker chars."""
+    lines = art.rstrip("\n").split("\n")
+    width = max((len(ln) for ln in lines), default=0)
+    grid = []
+    found = {}
+    for y, line in enumerate(lines):
+        row = list(line.ljust(width))
+        for x, ch in enumerate(row):
+            if ch in markers:
+                found.setdefault(ch, []).append((x, y))
+        grid.append(row)
+    return grid, found, width, len(lines)
+
+
+RIM_GLYPHS = set("▀▄▌▐▖▗▘▝▙▟▛▜▚▞▔▕")
+SHADE_GLYPHS = set("░▒▓")
+
+
+def ink_bounds(grid):
+    """Leftmost and rightmost non-blank column of a sprite.
+
+    Layout has to work off the ink, not the array: both sprites carry leading
+    and trailing blank columns from the art, and measuring those as part of
+    the sprite puts the gap in the wrong place.
+    """
+    left, right = None, None
+    for row in grid:
+        for x, ch in enumerate(row):
+            if ch == " ":
+                continue
+            if left is None or x < left:
+                left = x
+            if right is None or x > right:
+                right = x
+    return (0, 0) if left is None else (left, right)
+
+
+def sprite_tone(ch, rim, body, deep):
+    if ch in RIM_GLYPHS:
+        return rim
+    if ch in SHADE_GLYPHS:
+        return deep
+    return body
+
+
+class Particle:
+    __slots__ = ("x", "y", "vx", "vy", "life", "age", "kind")
+
+    def __init__(self, x, y, vx, vy, life, kind):
+        self.x = x
+        self.y = y
+        self.vx = vx
+        self.vy = vy
+        self.life = life
+        self.age = 0.0
+        self.kind = kind
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The scene
+# ─────────────────────────────────────────────────────────────────────────────
+
+class Scene:
+    def __init__(self, w, h, seed=None, wordmark=True, logo=None):
+        self.rng = random.Random(seed)
+        self.wordmark = wordmark
+        # Loaded once, not per resize: decoding the PNG on every SIGWINCH
+        # would stall the animation each time the window is dragged.
+        self.logo = load_logo() if logo is None else (logo or None)
+        self.resize(w, h)
+
+    # ---- layout ------------------------------------------------------------
+
+    def resize(self, w, h):
+        self.w = max(40, w)
+        self.h = max(14, h)
+        w, h = self.w, self.h
+
+        self.castle, cmarks, self.cw, self.ch = parse_sprite(
+            CASTLE_ART, WINDOW_MARK + GATE_MARK)
+        self.wordmark_grid, _, self.ww, self.wh = parse_sprite(WORDMARK_ART)
+        self.moon_grid, _, self.mw, self.mh = parse_sprite(MOON_ART)
+
+        self.ground_row = h - 2
+
+        cl, cr = ink_bounds(self.castle)
+        cwid = cr - cl + 1
+        dmarks = {}
+        self.dragon_is_logo = False
+        if self.logo is not None:
+            cols = max(24, min(int(w * DRAGON_WIDTH),
+                               w - cwid - GAP_MIN - 2))
+            rows = max(6, int(round(cols * (self.logo.h / self.logo.w)
+                                    / CELL_ASPECT)))
+            if rows > self.ground_row:
+                rows = max(6, self.ground_row)
+                cols = max(24, min(cols, int(round(
+                    rows * CELL_ASPECT * self.logo.w / self.logo.h))))
+            self.dragon = rasterize_logo(self.logo, cols, rows)
+            self.dw, self.dh = cols, rows
+            self.dragon_is_logo = True
+            self.snout_cell = (int(self.logo.snout[0] * cols),
+                               int(self.logo.snout[1] * rows))
+            self.eye_cell = (int(self.logo.eye[0] * cols),
+                             int(self.logo.eye[1] * rows))
+        else:
+            self.dragon, dmarks, self.dw, self.dh = parse_sprite(
+                DRAGON_ART, MOUTH_MARK + EYE_MARK)
+            self.snout_cell = self.eye_cell = None
+
+        # Kali's mark is a blue gradient: light along the crest, deep at the
+        # tail. Precomputed per row, since every cell in a row shares it.
+        span = max(1, self.dh - 1)
+        self.dragon_row_color = [
+            (int(KALI_LIGHT[0] + (KALI_DEEP[0] - KALI_LIGHT[0]) * y / span),
+             int(KALI_LIGHT[1] + (KALI_DEEP[1] - KALI_LIGHT[1]) * y / span),
+             int(KALI_LIGHT[2] + (KALI_DEEP[2] - KALI_LIGHT[2]) * y / span))
+            for y in range(self.dh)]
+
+        # Anchor both sprites to the ground and to their own side of the
+        # screen. The fire corridor is whatever is left between them, so the
+        # scene composes itself at any terminal size instead of needing a
+        # layout table per width.
+        dl, dr = ink_bounds(self.dragon)
+        dwid = dr - dl + 1
+        gap = max(GAP_MIN, min(GAP_MAX, w - 2 - dwid - cwid))
+        left = max(0, (w - (dwid + gap + cwid)) // 2)
+
+        self.dx = left - dl
+        self.cx = left + dwid + gap - cl
+        self.dy = max(0, self.ground_row - self.dh)
+        self.cy = max(0, self.ground_row - self.ch)
+
+        if self.snout_cell is not None:
+            # One column past the snout, so the flame leaves the mouth rather
+            # than starting inside the head.
+            self.mouth = (self.dx + self.snout_cell[0] + 1,
+                          self.dy + self.snout_cell[1])
+            self.eye = (self.dx + self.eye_cell[0], self.dy + self.eye_cell[1])
+        else:
+            self.mouth = self._anchor(
+                dmarks, MOUTH_MARK, self.dx, self.dy,
+                (self.dx + self.dw, self.dy + self.dh // 3))
+            self.eye = self._anchor(dmarks, EYE_MARK, self.dx, self.dy, None)
+        self.windows = [(self.cx + x, self.cy + y)
+                        for x, y in cmarks.get(WINDOW_MARK, [])]
+        self.gates = [(self.cx + x, self.cy + y)
+                      for x, y in cmarks.get(GATE_MARK, [])]
+
+        # Castle occupancy: which cells are stone, and the topmost stone in
+        # each column. Flames are seeded onto that skyline so they lick up over
+        # the battlements instead of rising out of the ground behind them.
+        self.stone = set()
+        self.skyline = {}
+        for y, row in enumerate(self.castle):
+            for x, ch in enumerate(row):
+                if ch == " ":
+                    continue
+                gx, gy = self.cx + x, self.cy + y
+                if 0 <= gx < w and 0 <= gy < h:
+                    self.stone.add((gx, gy))
+                    if gx not in self.skyline or gy < self.skyline[gx]:
+                        self.skyline[gx] = gy
+
+        self.castle_face = min(self.skyline) if self.skyline else w - 1
+
+        # The breath has to arrive hot enough to set stone alight, and the
+        # corridor between the maw and the castle is however wide the terminal
+        # happens to be. So the decay is derived from that distance rather
+        # than being a constant: fixed constants tuned at one size either
+        # fizzle out halfway across a wide screen or arrive undiminished on a
+        # narrow one. ARRIVING is the fraction of the source heat that should
+        # survive the trip; everything else here follows from it.
+        corridor = max(8, self.castle_face - (self.mouth[0] if self.mouth else 0))
+        self.corridor = corridor
+        self.jet_mult = ARRIVING ** (1.0 / corridor)
+        self.jet_sub = JET_SUB_BUDGET / corridor
+        # Budget the spread across the crossing, then ramp up to it over the
+        # first 40% so the jet still leaves the maw as a needle.
+        # Everything below is in rows, so it has to scale with how many rows
+        # there are: a plume tuned on a 32-row terminal is a thread on a
+        # 70-row one.
+        vscale = max(1.0, h / 32.0)
+        self.jet_kmax = min(0.22, JET_SPREAD_ROWS * vscale / corridor)
+        self.jet_kstep = self.jet_kmax / max(1.0, corridor * 0.4)
+        self.inject_spread = max(1, int(round(h / 24.0)))
+        self.sway_amp = 1.5 * vscale
+
+        # The breath has to break against the castle instead of sailing
+        # through it. Same set as self.stone, as a flat mask the inner loop
+        # can index without building a tuple per cell.
+        self.blocked = [False] * (w * h)
+        for gx, gy in self.stone:
+            self.blocked[gy * w + gx] = True
+
+        # Confine the rising-flame simulation to the castle and the air just
+        # above it. Nothing else can be on fire, and a full-screen pass is the
+        # single most expensive thing in the frame.
+        if self.skyline:
+            self.burn_x0 = max(0, min(self.skyline) - 3)
+            self.burn_x1 = min(w, max(self.skyline) + 4)
+            self.burn_y0 = max(0, min(self.skyline.values()) - 12)
+        else:
+            self.burn_x0, self.burn_x1, self.burn_y0 = 0, 0, 0
+
+        # Fields, flat lists indexed y*w+x.
+        self.jet = [0.0] * (w * h)
+        self.burn = [0.0] * (w * h)
+        self.ignite = [0.0] * w
+
+        self.particles = []
+        self.stars = []
+        star_count = max(14, (w * h) // 90)
+        for _ in range(star_count):
+            sx = self.rng.randrange(w)
+            sy = self.rng.randrange(max(1, self.ground_row - 2))
+            self.stars.append((sx, sy, self.rng.uniform(0, math.tau),
+                               self.rng.uniform(0.35, 1.0)))
+
+        # Top right, clear of the centred wordmark. Not the middle of the
+        # screen: the fire crosses there, and a moon in the corridor spends
+        # half the loop inside the plume.
+        self.moon = (max(0, min(w - self.mw, int(w * 0.84))), 1)
+
+        # Break up the horizon so the ground is a surface rather than a bar.
+        self.ground_tone = [self.rng.uniform(0.72, 1.12) for _ in range(w)]
+
+        # The wordmark goes along the top: it is the only band of the screen
+        # that neither sprite nor the fire ever reaches.
+        self.wm_x = max(0, (w - self.ww) // 2)
+        self.wm_y = 1 if self.mh + 2 < self.h else 0
+        self.show_wordmark = self.wordmark and h >= 24 and w >= self.ww + 8
+        self.flicker = 0.0
+        self.bob = 0
+
+    @staticmethod
+    def _anchor(marks, key, ox, oy, default):
+        got = marks.get(key)
+        if not got:
+            return default
+        x, y = got[0]
+        return (ox + x, oy + y)
+
+    # ---- simulation --------------------------------------------------------
+
+    def step(self, t, dt):
+        w, h = self.w, self.h
+        name, elapsed, dur = phase_at(t)
+        rng = self.rng
+        prog = elapsed / dur if dur else 0.0
+
+        # The dragon breathes even when it is not burning anything.
+        self.bob = int(round(math.sin(t * 1.15) * 0.9))
+        if name == "inhale":
+            self.bob -= 1
+
+        self._advect_jet(rng)
+        self._inject(t, name, prog, rng)
+        self._seed_castle(name, dt, rng)
+        self._rise_burn(rng)
+        self._spawn_particles(name, dt, rng)
+        self._move_particles(dt, rng)
+
+        target = 0.0
+        if name == "blast":
+            target = 1.0
+        elif name == "burn":
+            target = max(0.0, 1.0 - prog * 1.3)
+        self.flicker += (target - self.flicker) * min(1.0, dt * 4.0)
+
+    def _inject(self, t, name, prog, rng):
+        """Heat entering the world at the dragon's maw."""
+        if self.mouth is None:
+            return
+        mx, my = self.mouth
+        my += self.bob
+        w, h = self.w, self.h
+        jet = self.jet
+
+        # Turbulence goes in at the maw and travels downstream with the gas.
+        # Applying it along the plume instead — nudging each column's source
+        # row — compounds column over column into a random walk that drags
+        # the whole jet sideways and smears it.
+        puff = (0.88 + 0.12 * math.sin(t * 11.0)
+                + 0.09 * math.sin(t * 17.3 + 1.1))
+        # A continuous sway, not an occasional nudge. The maw traces a slow
+        # wave and the gas carries it downstream, which is what gives the
+        # plume a snaking body instead of a flat-topped slab.
+        my += int(round(self.sway_amp * math.sin(t * 3.1)))
+
+        if name == "blast":
+            # Ramp in and out so the jet starts and stops as a jet rather than
+            # appearing whole.
+            env = min(1.0, prog / 0.16, max(0.0, (1.0 - prog) / 0.22))
+            spread = self.inject_spread
+            power = 1.0
+        elif name == "inhale":
+            env = 0.16 * prog
+            spread = 0
+            power = 0.5
+        elif name == "calm":
+            # A pilot light: just enough to say the thing is alive.
+            env = rng.uniform(0.18, 0.34) if rng.random() < 0.5 else 0.0
+            spread = 0
+            power = 0.85
+        else:
+            env = 0.0
+            spread = 0
+            power = 0.0
+
+        if env <= 0.0:
+            return
+
+        for dy in range(-spread, spread + 1):
+            y = my + dy
+            if not (0 <= y < h):
+                continue
+            edge = 1.0 - (abs(dy) / (spread + 1)) * 0.45
+            for dx in range(0, 3):
+                x = mx + dx
+                if not (0 <= x < w):
+                    continue
+                v = power * env * puff * edge * rng.uniform(0.86, 1.0)
+                i = y * w + x
+                if v > jet[i]:
+                    jet[i] = v
+
+    def _advect_jet(self, rng):
+        """Carry the breath downwind — rightward, with a little lift.
+
+        Scanning x from high to low means each column reads its left
+        neighbour's *previous* value, which is the trick that makes the
+        classic fire propagation work in a single buffer.
+        """
+        w, h = self.w, self.h
+        jet = self.jet
+        blocked = self.blocked
+        mx = self.mouth[0] if self.mouth else 0
+        rnd = rng.random
+        mult = self.jet_mult - 0.030
+        kmax, kstep = self.jet_kmax, self.jet_kstep
+
+        for x in range(w - 1, 0, -1):
+            reach = x - mx
+            if reach < 0:
+                # Upwind of the maw. Nothing blows backwards.
+                for y in range(h):
+                    jet[y * w + x] = 0.0
+                continue
+            # A needle at the lips that only opens into a plume downwind.
+            #
+            # This is a diffusion, not a resample. Picking one random source
+            # row per destination cell — the obvious way to widen a plume —
+            # tears it into vertical streaks, because neighbouring cells draw
+            # from unrelated rows. Averaging three neighbours instead keeps
+            # the plume whole and still lets it spread.
+            k = 0.0 if reach < 4 else min(kmax, (reach - 4) * kstep)
+            # Weight the sample from below more heavily than the one from
+            # above, and the whole plume drifts upward: hot gas rises.
+            rise = 0.0 if reach < 3 else min(0.45, (reach - 3) * 0.018)
+            sub = self.jet_sub
+            kd = k * (1.0 + rise)
+            ku = k * (1.0 - rise)
+            kc = 1.0 - kd - ku
+            base = x - 1
+
+            for y in range(h):
+                i = y * w + x
+                if blocked[i]:
+                    jet[i] = 0.0
+                    continue
+                row = y * w + base
+                v = jet[row] * kc
+                if y > 0:
+                    v += jet[row - w] * ku
+                if y < h - 1:
+                    v += jet[row + w] * kd
+                if v <= 0.0:
+                    jet[i] = 0.0
+                    continue
+                # Multiplicative jitter, so the plume flickers without the
+                # subtractive noise eating holes in it.
+                v = v * (mult + rnd() * 0.060) - rnd() * sub
+                jet[i] = v if v > 0.0 else 0.0
+
+    def _seed_castle(self, name, dt, rng):
+        """Turn breath arriving at the stone into per-column ignition."""
+        w = self.w
+        jet = self.jet
+        ignite = self.ignite
+
+        decay = 0.28 if name == "burn" else 0.16
+        for x in range(w):
+            ignite[x] = max(0.0, ignite[x] - decay * dt * rng.uniform(0.7, 1.3))
+
+        if name not in ("blast", "burn"):
+            return
+
+        # The breath breaks against the near face, so only a handful of
+        # columns are ever hit directly. Look down the whole height of the
+        # column, not just the roofline: the jet arrives at the dragon's head
+        # height, well below the battlements.
+        # Sample the column UPWIND of the stone as well as the stone's own.
+        # _advect_jet zeroes the jet wherever it is blocked, so a wall's own
+        # columns read zero however hard it is being hit — the heat is piled
+        # up against the face, one column to the left.
+        top_row = self.cy
+        bottom_row = min(self.h, self.ground_row)
+        for x, top in self.skyline.items():
+            hit = 0.0
+            for y in range(top_row, bottom_row):
+                row = y * w
+                v = jet[row + x]
+                if x > 0:
+                    u = jet[row + x - 1]
+                    if u > v:
+                        v = u
+                if v > hit:
+                    hit = v
+            if hit > 0.18:
+                ignite[x] = min(1.35, ignite[x] + hit * dt * 5.5)
+
+        # …and then it spreads along the building. Without this the castle
+        # burns as a stripe down whichever face the dragon is aimed at.
+        #
+        # A column may only be pulled up towards a FRACTION of its
+        # neighbour, never to the neighbour's own level: that ceiling is what
+        # stops the spread out-earning the decay and burning forever. The
+        # falloff is geometric rather than a fixed subtraction so the far wall
+        # still catches — subtracting a constant stalls the spread about ten
+        # columns from the impact and leaves two thirds of the castle cold.
+        cols = sorted(self.skyline)
+        snapshot = {x: ignite[x] for x in cols}
+        rate = 3.2 * dt
+        for x in cols:
+            neigh = max(snapshot.get(x - 1, 0.0), snapshot.get(x + 1, 0.0))
+            target = neigh * 0.975
+            if target > ignite[x]:
+                ignite[x] = min(target, ignite[x] + rate)
+
+    def _rise_burn(self, rng):
+        """Flames climbing the castle: heat rises, drifts, and cools."""
+        w, h = self.w, self.h
+        burn = self.burn
+        rnd = rng.random
+
+        for x, top in self.skyline.items():
+            v = self.ignite[x]
+            if v > 0.02:
+                i = top * w + x
+                lit = min(1.0, v) * rng.uniform(0.70, 1.0)
+                if lit > burn[i]:
+                    burn[i] = lit
+
+        x0, x1 = self.burn_x0, self.burn_x1
+        # Same lesson as the breath: average the three cells below rather
+        # than picking one of them at random. A random pick per cell scatters
+        # the flame into unconnected specks — it reads as confetti over the
+        # castle, not as burning. Weighting the left neighbour above the right
+        # leans the flames downwind, away from the dragon.
+        for y in range(self.burn_y0, h - 1):
+            row = y * w
+            below = (y + 1) * w
+            for x in range(x0, x1):
+                v = burn[below + x] * 0.62
+                if x > x0:
+                    v += burn[below + x - 1] * 0.24
+                if x < x1 - 1:
+                    v += burn[below + x + 1] * 0.14
+                if v <= 0.0:
+                    burn[row + x] = 0.0
+                    continue
+                v *= 0.79 + rnd() * 0.10
+                burn[row + x] = v if v > 0.0 else 0.0
+
+    def _spawn_particles(self, name, dt, rng):
+        parts = self.particles
+        if len(parts) > 420:
+            return
+        w = self.w
+
+        # Embers off anything burning hard.
+        heat_sources = []
+        if name in ("blast", "burn"):
+            for x, top in self.skyline.items():
+                if self.ignite[x] > 0.25:
+                    heat_sources.append((x, top))
+        if self.mouth and name == "blast":
+            heat_sources.append((self.mouth[0] + 2, self.mouth[1] + self.bob))
+
+        rate = 26.0 * dt
+        while rate > 0:
+            if rng.random() > min(1.0, rate):
+                break
+            rate -= 1.0
+            if not heat_sources:
+                break
+            sx, sy = heat_sources[rng.randrange(len(heat_sources))]
+            parts.append(Particle(
+                sx + rng.uniform(-1, 1), sy + rng.uniform(-0.5, 0.5),
+                rng.uniform(-1.4, 3.2), -rng.uniform(2.4, 6.0),
+                rng.uniform(0.7, 2.0), "ember"))
+
+        # Smoke, only once there is something to smoke.
+        if name in ("blast", "burn"):
+            smoke_rate = 11.0 * dt
+            cols = [x for x in self.skyline if self.ignite[x] > 0.2]
+            while cols and smoke_rate > 0:
+                if rng.random() > min(1.0, smoke_rate):
+                    break
+                smoke_rate -= 1.0
+                sx = cols[rng.randrange(len(cols))]
+                parts.append(Particle(
+                    sx + rng.uniform(-1.5, 1.5),
+                    self.skyline[sx] - rng.uniform(0, 2),
+                    rng.uniform(-0.6, 2.2), -rng.uniform(1.6, 3.4),
+                    rng.uniform(1.8, 4.0), "smoke"))
+
+        # A slow drift of spark toward the maw while the dragon draws breath.
+        if name == "inhale" and self.mouth and rng.random() < dt * 14:
+            mx, my = self.mouth
+            parts.append(Particle(
+                mx + rng.uniform(3, 14), my + self.bob + rng.uniform(-3, 3),
+                -rng.uniform(4, 9), rng.uniform(-1.2, 1.2),
+                rng.uniform(0.4, 0.9), "spark"))
+
+    def _move_particles(self, dt, rng):
+        alive = []
+        for p in self.particles:
+            p.age += dt
+            if p.age >= p.life:
+                continue
+            p.x += p.vx * dt
+            p.y += p.vy * dt
+            if p.kind == "smoke":
+                p.vy *= 0.985
+                p.vx += rng.uniform(-0.9, 1.1) * dt
+            else:
+                p.vy += rng.uniform(-1.2, 0.6) * dt
+                p.vx *= 0.985
+            if -2 <= p.x < self.w + 2 and -2 <= p.y < self.h + 2:
+                alive.append(p)
+        self.particles = alive
+
+    # ---- drawing -----------------------------------------------------------
+
+    def heat_at(self, x, y):
+        i = y * self.w + x
+        a = self.jet[i]
+        b = self.burn[i]
+        return a if a > b else b
+
+    def _light(self, x, y, radius=2):
+        """How much firelight falls on a cell — used to warm the silhouettes."""
+        w, h = self.w, self.h
+        best = 0.0
+        for dy in range(-radius, radius + 1):
+            yy = y + dy
+            if not (0 <= yy < h):
+                continue
+            row = yy * w
+            for dx in range(-radius, radius + 1):
+                xx = x + dx
+                if not (0 <= xx < w):
+                    continue
+                i = row + xx
+                v = self.jet[i]
+                b = self.burn[i]
+                if b > v:
+                    v = b
+                v *= 1.0 - (abs(dx) + abs(dy)) * 0.14
+                if v > best:
+                    best = v
+        return best
+
+    def render(self, t):
+        """Compose the frame into (chars, colors), both w*h flat lists."""
+        w, h = self.w, self.h
+        chars = [" "] * (w * h)
+        colors = [None] * (w * h)
+        rng = self.rng
+
+        self._draw_sky(chars, colors, t)
+        self._draw_castle(chars, colors)
+        self._draw_dragon(chars, colors, t)
+        self._draw_ground(chars, colors)
+        self._draw_particles(chars, colors, "smoke")
+        self._draw_fire(chars, colors)
+        self._draw_particles(chars, colors, "ember")
+        self._draw_particles(chars, colors, "spark")
+        if self.wordmark:
+            self._draw_wordmark(chars, colors)
+        return chars, colors
+
+    def _draw_sky(self, chars, colors, t):
+        w = self.w
+        for sx, sy, phase, amp in self.stars:
+            tw = 0.55 + 0.45 * math.sin(t * 1.3 + phase)
+            v = amp * tw
+            if v < 0.22:
+                continue
+            i = sy * w + sx
+            ch = "·" if v < 0.55 else ("+" if v < 0.82 else "*")
+            g = int(150 + 105 * v)
+            chars[i] = ch
+            colors[i] = (int(g * 0.86), int(g * 0.92), g)
+
+        mx, my = self.moon
+        for dy, row in enumerate(self.moon_grid):
+            for dx, ch in enumerate(row):
+                if ch == " ":
+                    continue
+                x, y = mx + dx, my + dy
+                if 0 <= x < w and 0 <= y < self.h:
+                    i = y * w + x
+                    chars[i] = ch
+                    colors[i] = (206, 208, 192) if ch == "█" else (150, 152, 140)
+
+    def _draw_castle(self, chars, colors):
+        w = self.w
+        windows = set(self.windows)
+        gates = set(self.gates)
+        for y, row in enumerate(self.castle):
+            gy = self.cy + y
+            if not (0 <= gy < self.h):
+                continue
+            for x, ch in enumerate(row):
+                if ch == " ":
+                    continue
+                gx = self.cx + x
+                if not (0 <= gx < w):
+                    continue
+                if ch == WINDOW_MARK:
+                    base, ch = WINDOW_LIT, "█"
+                elif ch == GATE_MARK:
+                    base, ch = GATE_DARK, "█"
+                else:
+                    base = sprite_tone(ch, CASTLE_RIM, CASTLE_BODY, CASTLE_DEEP)
+                i = gy * w + gx
+                chars[i] = ch
+                colors[i] = self._warm(base, self._light(gx, gy), 0.85)
+
+    def _draw_dragon(self, chars, colors, t):
+        w = self.w
+        bob = self.bob
+        logo = self.dragon_is_logo
+        row_color = self.dragon_row_color
+        for y, row in enumerate(self.dragon):
+            gy = self.dy + y + bob
+            if not (0 <= gy < self.h):
+                continue
+            for x, ch in enumerate(row):
+                if ch == " " or ch in (MOUTH_MARK, EYE_MARK):
+                    continue
+                gx = self.dx + x
+                if not (0 <= gx < w):
+                    continue
+                base = (row_color[y] if logo
+                        else sprite_tone(ch, DRAGON_RIM, DRAGON_BODY,
+                                         DRAGON_DEEP))
+                i = gy * w + gx
+                chars[i] = ch
+                colors[i] = self._warm(base, self._light(gx, gy), 0.5)
+
+        if self.eye:
+            ex, ey = self.eye
+            ey += bob
+            if 0 <= ex < w and 0 <= ey < self.h:
+                name, elapsed, dur = phase_at(t)
+                glow = 0.35 + 0.2 * math.sin(t * 3.1)
+                if name == "inhale":
+                    glow = 0.4 + 0.6 * (elapsed / dur)
+                elif name == "blast":
+                    glow = 1.0
+                i = ey * w + ex
+                chars[i] = "●"
+                colors[i] = (
+                    int(120 + 135 * glow),
+                    int(170 + 60 * glow - 90 * glow * glow),
+                    int(255 - 200 * glow),
+                )
+
+    def _draw_ground(self, chars, colors):
+        w = self.w
+        tone = self.ground_tone
+        for y in range(self.ground_row, self.h):
+            crest = y == self.ground_row
+            for x in range(w):
+                base = GROUND_RIM if crest else GROUND_BODY
+                k = tone[x] if crest else (0.6 + tone[x] * 0.3)
+                base = (min(255, int(base[0] * k)),
+                        min(255, int(base[1] * k)),
+                        min(255, int(base[2] * k)))
+                i = y * w + x
+                chars[i] = "▀" if crest else "█"
+                colors[i] = self._warm(base, self._light(x, y, radius=3) * 0.8)
+
+    def _draw_fire(self, chars, colors):
+        w, h = self.w, self.h
+        jet, burn = self.jet, self.burn
+        lut = FIRE_LUT
+        for y in range(h):
+            row = y * w
+            for x in range(w):
+                i = row + x
+                v = jet[i]
+                b = burn[i]
+                if b > v:
+                    v = b
+                if v < 0.200:
+                    continue
+                chars[i] = fire_glyph(v)
+                idx = int(v * FIRE_LUT_MAX)
+                colors[i] = lut[idx if idx <= FIRE_LUT_MAX else FIRE_LUT_MAX]
+
+    def _draw_particles(self, chars, colors, kind):
+        w, h = self.w, self.h
+        for p in self.particles:
+            if p.kind != kind:
+                continue
+            x, y = int(p.x), int(p.y)
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            frac = 1.0 - p.age / p.life
+            i = y * w + x
+            if kind == "smoke":
+                if frac < 0.15:
+                    continue
+                # Smoke is drawn under the fire, so it only shows through the
+                # gaps — and inside the plume those gaps read as soot in the
+                # flame. Keep it out of anything actually burning.
+                if self.heat_at(x, y) > 0.25:
+                    continue
+                tone = SMOKE_TONES[min(2, int(frac * 3))]
+                chars[i] = "░" if frac < 0.5 else "▒"
+                colors[i] = tone
+            else:
+                chars[i] = "·" if frac < 0.4 else "*"
+                idx = int(min(1.0, 0.45 + frac * 0.55) * FIRE_LUT_MAX)
+                colors[i] = FIRE_LUT[idx]
+
+    def _draw_wordmark(self, chars, colors):
+        if not self.show_wordmark:
+            return
+        w = self.w
+        for y, row in enumerate(self.wordmark_grid):
+            gy = self.wm_y + y
+            if not (0 <= gy < self.h):
+                continue
+            for x, ch in enumerate(row):
+                if ch == " ":
+                    continue
+                gx = self.wm_x + x
+                if not (0 <= gx < w):
+                    continue
+                i = gy * w + gx
+                chars[i] = ch
+                colors[i] = self._warm((44, 84, 140), self._light(gx, gy) * 0.7)
+
+    def _warm(self, base, light, gain=1.0):
+        """Light a silhouette with the fire.
+
+        ADDS firelight rather than blending toward it. A blend is the obvious
+        way to write this and it is wrong: every colour lerped toward orange
+        passes through grey on the way, so at the moment the dragon is most
+        brightly lit — jaws wrapped around a jet of flame — it stops being
+        blue and turns to putty. Adding light brightens it instead and leaves
+        the hue recognisable, which is the whole point of a mascot.
+        """
+        if light < 0.04:
+            return base
+        f = light * 1.15 * gain
+        if f > 1.0:
+            f = 1.0
+        r = int(base[0] + FIRELIGHT[0] * f)
+        g = int(base[1] + FIRELIGHT[1] * f)
+        b = int(base[2] + FIRELIGHT[2] * f)
+        return (255 if r > 255 else r,
+                255 if g > 255 else g,
+                255 if b > 255 else b)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Output
+# ─────────────────────────────────────────────────────────────────────────────
+
+def frame_to_ansi(chars, colors, w, h):
+    out = ["\x1b[H"]
+    push = out.append
+    last = None
+    for y in range(h):
+        row = y * w
+        # Leave the bottom-right cell unwritten: filling the last cell of the
+        # last line scrolls the terminal on some emulators, which would shear
+        # the whole frame.
+        span = w - 1 if y == h - 1 else w
+        for x in range(span):
+            i = row + x
+            c = colors[i]
+            ch = chars[i]
+            if c is None:
+                if last is not None:
+                    push("\x1b[0m")
+                    last = None
+                push(ch)
+                continue
+            if c != last:
+                push("\x1b[38;2;%d;%d;%dm" % c)
+                last = c
+            push(ch)
+        if y != h - 1:
+            push("\r\n")
+    push("\x1b[0m")
+    return "".join(out)
+
+
+def overlay_text(chars, colors, w, h, x, y, text, color):
+    if not (0 <= y < h):
+        return
+    for k, ch in enumerate(text):
+        gx = x + k
+        if 0 <= gx < w:
+            i = y * w + gx
+            chars[i] = ch
+            colors[i] = color
+
+
+def frame_to_plain(chars, w, h):
+    return "\n".join(
+        "".join(chars[y * w:(y + 1) * w]).rstrip() for y in range(h))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Runtime
+# ─────────────────────────────────────────────────────────────────────────────
+
+def hypr(cmd):
+    try:
+        subprocess.run(["hyprctl", "dispatch", cmd],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=2)
+    except Exception:
+        pass
+
+
+def hypr_eval(cmd):
+    try:
+        subprocess.run(["hyprctl", "eval", cmd],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=2)
+    except Exception:
+        pass
+
+
+def set_cursor_invisible(flag):
+    value = "true" if flag else "false"
+    hypr_eval("hl.config({ cursor = { invisible = %s } })" % value)
+
+
+def kill_siblings():
+    """Close every screensaver window, not just this one.
+
+    omarchy-launch-screensaver opens one per monitor and the user dismissed
+    all of them, so the others have to go too.
+    """
+    for cmd in (["pkill", "-f", "[o]rg.omarchy.screensaver"],):
+        try:
+            subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=2)
+        except Exception:
+            pass
+
+
+def wait_for_resize(timeout=2.0):
+    """Terminals allocate the pty at 80x24 and resize once the compositor has
+    told the window how big it is. Laying the scene out before that lands
+    paints an 80x24 canvas into the corner of a fullscreen window."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            size = os.get_terminal_size()
+        except OSError:
+            return
+        if (size.columns, size.lines) != (80, 24):
+            return
+        time.sleep(0.02)
+
+
+def run(opts):
+    fd = sys.stdin.fileno()
+    isatty = os.isatty(fd)
+    if isatty and not opts.size:
+        wait_for_resize()
+
+    if opts.size:
+        w, h = opts.size
+    else:
+        try:
+            size = os.get_terminal_size()
+            w, h = size.columns, size.lines
+        except OSError:
+            w, h = 100, 30
+
+    scene = Scene(w, h, seed=opts.seed, wordmark=not opts.no_wordmark,
+                  logo=False if opts.no_logo else None)
+
+    resized = {"flag": False}
+
+    def on_winch(_sig, _frm):
+        resized["flag"] = True
+
+    old_term = None
+    out = sys.stdout
+    try:
+        if isatty:
+            old_term = termios.tcgetattr(fd)
+            tty.setraw(fd)
+            signal.signal(signal.SIGWINCH, on_winch)
+        # Alternate screen, cursor off, black background. The background
+        # matters: the scene is a night sky and any theme tint shows through
+        # every empty cell.
+        out.write("\x1b[?1049h\x1b[?25l\x1b]11;rgb:00/00/00\x07\x1b[2J")
+        if opts.mouse:
+            out.write("\x1b[?1003h")
+        out.flush()
+        set_cursor_invisible(True)
+
+        frame_time = 1.0 / opts.fps
+        sim_dt = frame_time
+        start = time.monotonic()
+        next_frame = start
+        t = 0.0
+        hud_fps = 0.0
+        hud_build = 0.0
+        hud_write = 0.0
+        last_frame_at = None
+
+        while True:
+            if resized["flag"]:
+                resized["flag"] = False
+                try:
+                    size = os.get_terminal_size()
+                    scene.resize(size.columns, size.lines)
+                    out.write("\x1b[2J")
+                except OSError:
+                    pass
+
+            t0 = time.monotonic()
+            scene.step(t, sim_dt)
+            chars, colors = scene.render(t)
+            if opts.hud:
+                # Last frame's numbers, so the frame is still built once.
+                # Measured against the wall clock rather than against sim_dt:
+                # the question a HUD exists to answer is whether the loop is
+                # really keeping the pace it thinks it is.
+                overlay_text(chars, colors, scene.w, scene.h, 0, 0,
+                             "t=%6.2f build=%5.1fms write=%5.1fms real=%4.1ffps"
+                             % (t, hud_build * 1000, hud_write * 1000,
+                                hud_fps), (255, 0, 255))
+            body = frame_to_ansi(chars, colors, scene.w, scene.h)
+            t1 = time.monotonic()
+            hud_build = t1 - t0
+            out.write(body)
+            out.flush()
+            t2 = time.monotonic()
+            hud_write = t2 - t1
+            if last_frame_at is not None:
+                dtr = t2 - last_frame_at
+                if dtr > 0:
+                    hud_fps += ((1.0 / dtr) - hud_fps) * 0.15
+            last_frame_at = t2
+
+            t += sim_dt
+            next_frame += frame_time
+            now = time.monotonic()
+            wait = next_frame - now
+            if wait < 0:
+                # Fell behind: give up the lost time rather than spiral.
+                next_frame = now
+                wait = 0.0
+
+            if isatty:
+                r, _, _ = select.select([fd], [], [], wait)
+                if r:
+                    os.read(fd, 1024)
+                    return
+            elif wait:
+                time.sleep(wait)
+    finally:
+        if opts.mouse:
+            out.write("\x1b[?1003l")
+        out.write("\x1b[0m\x1b[?25h\x1b[?1049l")
+        out.flush()
+        if old_term is not None:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
+        set_cursor_invisible(False)
+
+
+def parse_size(text):
+    try:
+        w, h = text.lower().split("x")
+        return int(w), int(h)
+    except Exception:
+        raise argparse.ArgumentTypeError("size must look like 100x30")
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        description="ASCII screensaver: the Kali dragon burns a castle.")
+    # 24 is plenty for fire and costs about half of a core less than 30
+    # on the hardware this targets. A screensaver runs for hours.
+    ap.add_argument("--fps", type=float, default=24.0)
+    ap.add_argument("--size", type=parse_size,
+                    help="force a canvas size, e.g. 100x30")
+    ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--no-wordmark", action="store_true")
+    ap.add_argument("--no-logo", action="store_true",
+                    help="use the built-in dragon instead of Kali's logo file")
+    ap.add_argument("--no-mouse", dest="mouse", action="store_false",
+                    default=True,
+                    help="do not exit on mouse movement")
+    ap.add_argument("--still", type=float, metavar="T",
+                    help="print the frame at loop time T and exit")
+    ap.add_argument("--color", action="store_true",
+                    help="with --still, keep the ANSI colour")
+    ap.add_argument("--hud", action="store_true",
+                    help="overlay loop time and measured frame rate")
+    ap.add_argument("--no-kill", action="store_true",
+                    help="do not close sibling screensaver windows on exit")
+    opts = ap.parse_args(argv)
+
+    if opts.still is not None:
+        w, h = opts.size or (100, 30)
+        scene = Scene(w, h, seed=opts.seed if opts.seed is not None else 7,
+                      wordmark=not opts.no_wordmark,
+                      logo=False if opts.no_logo else None)
+        steps = max(1, int(opts.still * opts.fps))
+        dt = 1.0 / opts.fps
+        t = 0.0
+        for _ in range(steps):
+            scene.step(t, dt)
+            t += dt
+        chars, colors = scene.render(t)
+        if opts.color:
+            print(frame_to_ansi(chars, colors, scene.w, scene.h))
+        else:
+            print(frame_to_plain(chars, scene.w, scene.h))
+        return 0
+
+    def bail(_sig, _frm):
+        raise SystemExit(0)
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(sig, bail)
+
+    try:
+        run(opts)
+    finally:
+        if not opts.no_kill:
+            kill_siblings()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

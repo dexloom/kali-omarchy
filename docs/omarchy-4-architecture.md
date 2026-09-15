@@ -150,7 +150,7 @@ Third-party modules are first-class:
 | `bin/` scripts | ✅ **408 of 444** are portable; only **36** call pacman/yay |
 | `omarchy-cmd-present` | ✅ pure bash, no deps — safe for `when` guards |
 | `install/` tree | ❌ Arch-only (pacstrap, pacman, yay) — **not used by this project** |
-| AUR packages | ❌ `aether`, `herdr`, `omacalc`, `omacut`, `omawrite`, `tensaku`, `omarchy-nvim`, `cliamp`, `ttfx`, `tobi-try` have no Debian equivalent |
+| AUR packages | ❌ `aether`, `herdr`, `omacalc`, `omacut`, `omawrite`, `tensaku`, `omarchy-nvim`, `cliamp`, `tobi-try` have no Debian equivalent. `ttfx` likewise — the screensaver that needed it is replaced by `kali-screensaver` (patch 0003) |
 | `uwsm` | ⚠️ in Debian; `omarchy-launch-tui` needs it plus `xdg-terminal-exec` |
 | Lua Hyprland config | ⚠️ unverified on Debian's `+ds` build |
 

@@ -682,10 +682,12 @@ resolving an `omarchy-*` command **by name** goes through the same path.
 The deploy appends the PATH export to `~/.profile` and then *verifies* a login
 shell can resolve `omarchy-system-lock`, because this failure hides itself.
 
-> **The screensaver still will not run**, and that is separate:
-> `omarchy-launch-screensaver` requires `ttfx`, an Arch/AUR package with no
-> Debian equivalent, so it exits 1 by design. The lock fires independently of
-> it, so locking works without a screensaver.
+> **The screensaver** used to be a separate casualty here:
+> `omarchy-launch-screensaver` required `ttfx`, an Arch/AUR package with no
+> Debian equivalent, so it exited 1 by design. Patch 0003 points the launcher
+> at `kali-screensaver` instead and lets it fall back to any installed terminal
+> that accepts a window class (qterminal does not). The lock still fires
+> independently of the screensaver, so locking works either way.
 
 ### Idle and lock timers
 

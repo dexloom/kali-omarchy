@@ -1,0 +1,112 @@
+Subject: screensaver: run on Debian, without ttfx and without a qterminal veto
+
+Omarchy's screensaver never ran on this box at all, for two separate reasons,
+and both are in the launcher.
+
+The first is `ttfx`. omarchy-launch-screensaver opens with
+
+    if omarchy-cmd-missing ttfx; then exit 1; fi
+
+and ttfx is an AUR package -- a Rust text-effects renderer with no Debian
+package and no Debian equivalent. On Kali that guard is unsatisfiable, so the
+launcher exited 1 every time it was called: on idle, from the menu, from
+`omarchy-launch-screensaver force`. Nothing was broken and nothing was
+logged; the feature was simply absent.
+
+The second is the terminal. The launcher only proceeds if the system's
+default terminal is Alacritty, Foot, Ghostty or Kitty, because it needs to
+pass a window class (so the `org.omarchy.screensaver` fullscreen rule
+matches) and a font size. On a stock Kali `xdg-terminal-exec --print-id`
+reports qterminal, which takes neither -- the same limitation that patch 0002
+works around for presentation terminals. So even with a renderer in place the
+launcher would have refused.
+
+This patch changes both:
+
+  * the ttfx requirement becomes a kali-screensaver requirement, and the
+    terminals run `kali-screensaver` instead of `omarchy-screensaver`.
+    kali-screensaver is this repo's renderer -- a scene animation rather than
+    a text-effect engine, so it is a replacement for ttfx rather than a port
+    of it, and it draws Kali's own dragon burning a castle.
+
+  * the terminal check falls back to whichever of the four IS installed
+    rather than refusing outright. Being unable to name a window is a reason
+    to use a different terminal for this one window, not a reason to have no
+    screensaver. Kitty is preferred and is already installed by
+    10-omarchy4-packages.sh.
+
+Everything else is left alone deliberately. The per-monitor loop, the socat
+event stream that waits for each window to map before moving focus, the
+screensaver-off toggle and the `force` argument all still work, so idle
+detection, `omarchy-toggle-screensaver`, the bar's idle indicator,
+omarchy-debug-idle and omarchy-system-lock's cleanup keep functioning
+unchanged -- they all address the screensaver through the same
+`org.omarchy.screensaver` window class.
+
+--- a/bin/omarchy-launch-screensaver	2026-09-15 13:08:15
++++ b/bin/omarchy-launch-screensaver	2026-09-15 13:08:28
+@@ -2,7 +2,10 @@
+ 
+ # omarchy:summary=Launch the Omarchy screensaver in the default terminal on the system with the correct font configuration.
+ 
+-if omarchy-cmd-missing ttfx; then
++# Kali: the screensaver here is kali-screensaver, not ttfx. ttfx is an AUR
++# package with no Debian equivalent, so on Kali the stock guard exited 1 every
++# time and the screensaver never ran at all.
++if omarchy-cmd-missing kali-screensaver; then
+   exit 1
+ fi
+ 
+@@ -17,10 +20,28 @@
+ focused=$(omarchy-hyprland-monitor-focused)
+ terminal=$(xdg-terminal-exec --print-id)
+ 
++# Kali: if the default terminal is not one of the four, fall back to whichever
++# of them IS installed instead of refusing. The screensaver needs a terminal
++# that takes a window class and a font size on the command line; qterminal,
++# which is what xdg-terminal-exec reports on a stock Kali, takes neither. That
++# is a reason to use a different terminal for this one window, not a reason to
++# have no screensaver.
+ case $terminal in
+ *Alacritty* | *ghostty* | *foot* | *kitty*) ;;
+ *)
+-  omarchy-notification-send -g ✋ "Screensaver only runs in Alacritty, Foot, Ghostty, or Kitty"
++  for candidate in kitty alacritty foot ghostty; do
++    if command -v "$candidate" >/dev/null 2>&1; then
++      terminal=$candidate
++      break
++    fi
++  done
++  ;;
++esac
++
++case $terminal in
++*Alacritty* | *alacritty* | *ghostty* | *foot* | *kitty*) ;;
++*)
++  omarchy-notification-send -g ✋ "Screensaver needs Alacritty, Foot, Ghostty, or Kitty installed"
+   exit 1
+   ;;
+ esac
+@@ -57,17 +78,17 @@
+   hypr_focus_monitor "$m"
+ 
+   case $terminal in
+-  *Alacritty*)
+-    hypr_exec alacritty --class=org.omarchy.screensaver --config-file "$OMARCHY_PATH/default/alacritty/screensaver.toml" -e omarchy-screensaver
++  *Alacritty* | *alacritty*)
++    hypr_exec alacritty --class=org.omarchy.screensaver --config-file "$OMARCHY_PATH/default/alacritty/screensaver.toml" -e kali-screensaver
+     ;;
+   *ghostty*)
+-    hypr_exec ghostty --class=org.omarchy.screensaver --config-file="$OMARCHY_PATH/default/ghostty/screensaver" --font-size=18 -e omarchy-screensaver
++    hypr_exec ghostty --class=org.omarchy.screensaver --config-file="$OMARCHY_PATH/default/ghostty/screensaver" --font-size=18 -e kali-screensaver
+     ;;
+   *foot*)
+-    hypr_exec foot --app-id=org.omarchy.screensaver --config="$OMARCHY_PATH/default/foot/screensaver.ini" -e omarchy-screensaver
++    hypr_exec foot --app-id=org.omarchy.screensaver --config="$OMARCHY_PATH/default/foot/screensaver.ini" -e kali-screensaver
+     ;;
+   *kitty*)
+-    hypr_exec kitty --class=org.omarchy.screensaver --override font_size=18 --override window_padding_width=0 -e omarchy-screensaver
++    hypr_exec kitty --class=org.omarchy.screensaver --override font_size=18 --override window_padding_width=0 -e kali-screensaver
+     ;;
+   esac
+ 

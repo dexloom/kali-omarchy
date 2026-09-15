@@ -11,6 +11,12 @@
   "kali.quick.vulnscan": {"icon":"󱂃","label":"Nmap vuln scan…","description":"Prompt for a target, run the vuln NSE scripts","when":"omarchy-cmd-present nmap","action":"omarchy-launch-floating-terminal-with-presentation 'kali-scan-prompt --vuln'"},
   "kali.quick.searchsploit": {"icon":"󰉍","label":"SearchSploit…","description":"Prompt and search Exploit-DB offline","when":"omarchy-cmd-present searchsploit","action":"omarchy-launch-floating-terminal-with-presentation kali-searchsploit-prompt"},
   "kali.quick.airodump": {"icon":"󰶩","label":"Airodump…","description":"Pick a wireless interface and capture","when":"omarchy-cmd-present airodump-ng","action":"omarchy-launch-floating-terminal-with-presentation kali-airodump-prompt"},
+  // Omarchy has no row for starting the screensaver by hand — idle is the only
+  // trigger it ships. `force` bypasses the screensaver-off toggle so this row
+  // always does what it says.
+  "kali.quick.screensaver": {"icon":"󱄄","label":"Screensaver","description":"Kali's dragon burns a castle — any key or mouse move exits","when":"omarchy-cmd-present kali-screensaver","action":"omarchy-launch-screensaver force"},
+  "kali.quick.screensaver-toggle": {"icon":"󱄄","label":"Screensaver on idle","description":"Whether idle starts the screensaver","checked":"! omarchy-toggle-enabled screensaver-off","action":"omarchy-toggle-screensaver"},
+
   "kali.quick.wordlists": {"icon":"󰉍","label":"Wordlists","description":"Browse /usr/share/wordlists","when":"[[ -d /usr/share/wordlists ]]","action":"omarchy-launch-or-focus-tui 'ls -la /usr/share/wordlists; $SHELL'"},
 
   // ── Services — `checked` shows a live ✓ when the unit is running ────────
