@@ -52,7 +52,12 @@ write_pin() {
     mkdir -p "$(dirname "$DROPIN")"
     # `&&` alone would abort under `set -e` when there is no file to back up.
     if [[ -f $DROPIN ]]; then cp "$DROPIN" "$DROPIN.bak-$(date +%Y%m%d-%H%M%S)"; fi
-    sed "s/@@VK_DEVICE@@/$dev/" "$template" >"$DROPIN"
+    # Anchored to the directive so the placeholder stays readable in the
+    # comment above it, which is what tells the next reader how to change it.
+    sed "s/^Environment=GGML_VK_VISIBLE_DEVICES=@@VK_DEVICE@@$/Environment=GGML_VK_VISIBLE_DEVICES=$dev/" \
+        "$template" >"$DROPIN"
+    grep -q "^Environment=GGML_VK_VISIBLE_DEVICES=$dev$" "$DROPIN" \
+        || die "substitution failed — template changed shape?"
     systemctl --user daemon-reload 2>/dev/null || true
     systemctl --user restart voxtype.service 2>/dev/null || warn "voxtype restart failed"
     ok "pinned GGML_VK_VISIBLE_DEVICES=$dev  ($DROPIN)"
