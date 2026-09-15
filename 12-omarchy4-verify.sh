@@ -80,7 +80,10 @@ if [[ -f $dropin ]]; then
     # on purpose — that is how a reader learns to change the device — so a bare
     # grep for @@VK_DEVICE@@ matches a correctly installed file.
     if grep -qE '^Environment=GGML_VK_VISIBLE_DEVICES=[0-9]+$' "$dropin"; then
-        P "voxtype GPU pin: $(grep -oE 'GGML_VK_VISIBLE_DEVICES=[0-9]+$' "$dropin")"
+        # Same anchor for the REPORTED value: the template also carries a
+        # commented-out `Environment=...=0` example for the integrated GPU, and
+        # an unanchored grep picks that up and reports the wrong device.
+        P "voxtype GPU pin: device $(sed -n 's/^Environment=GGML_VK_VISIBLE_DEVICES=\([0-9]*\)$/\1/p' "$dropin")"
     else
         F "voxtype GPU pin not substituted — re-run 16-voxtype-gpu.sh --pin-device N"
     fi
