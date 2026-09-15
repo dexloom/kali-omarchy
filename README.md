@@ -93,7 +93,7 @@ safely.
 | `10-omarchy4-packages.sh` | **yes** | quickshell, uwsm, lua5.4, inotify-tools, QtQuick.Effects, fonts, VA-API, ffmpeg, pipewire-alsa, libxcb-cursor0 |
 | `13-omarchy4-fonts.sh` | no | upstream Symbols Nerd Font + Omarchy's own icon font |
 | `11-omarchy4-deploy.sh` | no | generates the Kali menu, patches the Omarchy checkout, installs config, adds bind descriptions, masks conflicting units, dedups the Apps list |
-| `12-omarchy4-verify.sh` | no | 60 assertions; changes nothing |
+| `12-omarchy4-verify.sh` | no | 61 assertions; changes nothing |
 | `14-omarchy4-extras.sh` | part | Voxtype + OSD (no root), LocalSend `.deb` (root) |
 | `15-nvidia-offload.sh` | **yes** | proprietary NVIDIA driver for compute, then **reboot** |
 | `16-voxtype-gpu.sh` | no | swaps Voxtype to the Vulkan (or `--cuda`) build; `--pin-device N` pins the GPU |
@@ -238,7 +238,7 @@ They are left alone deliberately.
 ## Status
 
 Verified end to end on one machine: Kali Rolling 2026.3, Intel Iris Plus +
-NVIDIA MX350, LightDM, QTerminal. `12-omarchy4-verify.sh` reports **60 passed,
+NVIDIA MX350, LightDM, QTerminal. `12-omarchy4-verify.sh` reports **61 passed,
 0 failed**.
 
 Nothing is currently known to be broken. Omarchy's own screensaver needed
