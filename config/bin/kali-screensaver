@@ -20,6 +20,7 @@ import argparse
 import math
 import os
 import random
+import re
 import select
 import signal
 import subprocess
@@ -1322,6 +1323,83 @@ def frame_to_plain(chars, w, h):
 # Runtime
 # ─────────────────────────────────────────────────────────────────────────────
 
+# A mouse report in SGR encoding: ESC [ < button ; col ; row (M press | m
+# release). SGR rather than the default X10 encoding because X10 packs the
+# coordinates into single bytes and gives up past column 223.
+MOUSE_SGR = re.compile(rb"\x1b\[<(\d+);(\d+);(\d+)([Mm])")
+# The same thing, truncated by a read() that landed mid-sequence.
+MOUSE_PARTIAL = re.compile(rb"\x1b(\[(<\d*(;\d*){0,2})?)?\Z")
+
+
+class InputWatcher:
+    """Decide whether what the terminal sent should dismiss the screensaver.
+
+    Not every byte on stdin is the user. Turning on motion reporting makes the
+    terminal send a motion event the moment a window maps under the pointer,
+    so treating any byte as "user is back" dismissed the screensaver about a
+    second after it appeared, every time, without anybody touching anything.
+
+    So: keystrokes and clicks dismiss it immediately, and motion only once the
+    pointer has actually MOVED — measured from wherever it first reported,
+    which is the only way to tell a real nudge from the terminal announcing a
+    pointer that has been sitting still all along.
+    """
+
+    def __init__(self, threshold=2, partial_timeout=0.25):
+        self.threshold = threshold
+        self.partial_timeout = partial_timeout
+        self.origin = None
+        self.buf = b""
+        self.pending_since = None
+
+    def reset(self):
+        """Forget the reference position.
+
+        Called on resize: cell coordinates are relative to a grid that just
+        changed size, so the same physical pointer reports a completely
+        different cell and would read as a huge movement.
+        """
+        self.origin = None
+        self.buf = b""
+        self.pending_since = None
+
+    def feed(self, data, now):
+        self.buf += data
+        pos = 0
+        buf = self.buf
+        while pos < len(buf):
+            if buf[pos] != 0x1B:
+                return True                      # an ordinary keystroke
+            m = MOUSE_SGR.match(buf, pos)
+            if m:
+                button = int(m.group(1))
+                x, y = int(m.group(2)), int(m.group(3))
+                pos = m.end()
+                if button & 32:                  # motion
+                    if self.origin is None:
+                        self.origin = (x, y)
+                    elif (abs(x - self.origin[0]) + abs(y - self.origin[1])
+                          >= self.threshold):
+                        return True
+                else:                            # a real press or release
+                    return True
+                continue
+            if MOUSE_PARTIAL.match(buf, pos):
+                # Could still become a mouse report once the rest arrives —
+                # but a bare ESC keypress looks exactly like this and never
+                # completes, so give up on it after a moment.
+                if self.pending_since is None:
+                    self.pending_since = now
+                elif now - self.pending_since > self.partial_timeout:
+                    return True
+                self.buf = buf[pos:]
+                return False
+            return True                          # F-keys, arrows, anything else
+        self.buf = b""
+        self.pending_since = None
+        return False
+
+
 def hypr(cmd):
     try:
         subprocess.run(["hyprctl", "dispatch", cmd],
@@ -1409,10 +1487,13 @@ def run(opts):
         # every empty cell.
         out.write("\x1b[?1049h\x1b[?25l\x1b]11;rgb:00/00/00\x07\x1b[2J")
         if opts.mouse:
-            out.write("\x1b[?1003h")
+            # 1003 = report motion even with no button held; 1006 = SGR
+            # encoding, so the coordinates survive past column 223.
+            out.write("\x1b[?1003h\x1b[?1006h")
         out.flush()
         set_cursor_invisible(True)
 
+        watcher = InputWatcher()
         frame_time = 1.0 / opts.fps
         sim_dt = frame_time
         start = time.monotonic()
@@ -1432,6 +1513,7 @@ def run(opts):
                     out.write("\x1b[2J")
                 except OSError:
                     pass
+                watcher.reset()
 
             t0 = time.monotonic()
             scene.step(t, sim_dt)
@@ -1469,14 +1551,14 @@ def run(opts):
 
             if isatty:
                 r, _, _ = select.select([fd], [], [], wait)
-                if r:
-                    os.read(fd, 1024)
+                data = os.read(fd, 4096) if r else b""
+                if watcher.feed(data, time.monotonic()):
                     return
             elif wait:
                 time.sleep(wait)
     finally:
         if opts.mouse:
-            out.write("\x1b[?1003l")
+            out.write("\x1b[?1006l\x1b[?1003l")
         out.write("\x1b[0m\x1b[?25h\x1b[?1049l")
         out.flush()
         if old_term is not None:

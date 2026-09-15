@@ -187,6 +187,19 @@ hl.window_rule({ name = "omarchy-float",  match = { class = float_match }, float
 hl.window_rule({ name = "omarchy-center", match = { class = float_match }, center = true })
 hl.window_rule({ name = "omarchy-size",   match = { class = float_match }, size = { 875, 600 } })
 
+-- ...except the screensaver, which is also an `org.omarchy.*` class and so is
+-- caught by the three rules above. Upstream never hits this: Omarchy tags the
+-- windows it wants floated and sizes `tag:floating-window`, while the rules
+-- here match on the class pattern, which is the broader net. Left alone, the
+-- screensaver opens as a centred 875x600 box in the middle of the desktop
+-- instead of covering it.
+--
+-- These come last so they win, and they mirror what Omarchy's own
+-- default/hypr/apps/system.lua asks for.
+local screensaver_match = "^org\\.omarchy\\.screensaver$"
+hl.window_rule({ name = "screensaver-fullscreen", match = { class = screensaver_match }, fullscreen = true })
+hl.window_rule({ name = "screensaver-animation",  match = { class = screensaver_match }, animation = "slide" })
+
 -- The presentation terminal is identified by title as well as app-id, because
 -- xdg-terminal-exec does not always pass --app-id through to every terminal.
 hl.window_rule({ name = "omarchy-title-float",  match = { title = "^Omarchy$" }, float = true })
