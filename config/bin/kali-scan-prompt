@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Interactive nmap prompt used by the Kali menu (kali.recon.zenmap / kali.vuln.nmap-vuln).
+set -euo pipefail
+
+vuln=0
+[[ ${1-} == "--vuln" ]] && vuln=1
+
+read -rp "Target (host / CIDR / hostname): " target
+[[ -z ${target// } ]] && { echo "No target given."; exit 1; }
+
+if (( vuln )); then
+  set -- -sV --script vuln "$target"
+else
+  echo
+  echo "  1) Quick        — top 1000 TCP ports"
+  echo "  2) Full TCP     — all 65535 ports"
+  echo "  3) Service+OS   — -sV -O"
+  echo "  4) UDP top 100  — -sU"
+  read -rp "Profile [1]: " profile
+  case "${profile:-1}" in
+    2) set -- -p- "$target" ;;
+    3) set -- -sV -O "$target" ;;
+    4) set -- -sU --top-ports 100 "$target" ;;
+    *) set -- "$target" ;;
+  esac
+fi
+
+echo
+echo "> sudo nmap $*"
+echo
+sudo nmap "$@"

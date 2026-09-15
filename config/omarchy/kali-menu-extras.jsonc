@@ -1,0 +1,86 @@
+  // Hand-written rows that have NO .desktop equivalent, so the generator
+  // cannot produce them. Appended verbatim to the generated menu.
+  //
+  // Keep this file to things Kali's own metadata genuinely lacks:
+  // interactive prompts, live service state, system maintenance, overrides.
+  // Anything that is just "launch tool X" belongs to the generator.
+
+  // ── Quick actions — interactive prompts ─────────────────────────────────
+  "kali.quick": {"icon":"󰆞","label":"Quick Actions","title":"Quick Actions","aliases":["quick"]},
+  "kali.quick.scan": {"icon":"󰾳","label":"Nmap scan…","description":"Prompt for a target and scan profile","when":"omarchy-cmd-present nmap","action":"omarchy-launch-floating-terminal-with-presentation kali-scan-prompt"},
+  "kali.quick.vulnscan": {"icon":"󱂃","label":"Nmap vuln scan…","description":"Prompt for a target, run the vuln NSE scripts","when":"omarchy-cmd-present nmap","action":"omarchy-launch-floating-terminal-with-presentation 'kali-scan-prompt --vuln'"},
+  "kali.quick.searchsploit": {"icon":"󰉍","label":"SearchSploit…","description":"Prompt and search Exploit-DB offline","when":"omarchy-cmd-present searchsploit","action":"omarchy-launch-floating-terminal-with-presentation kali-searchsploit-prompt"},
+  "kali.quick.airodump": {"icon":"󰶩","label":"Airodump…","description":"Pick a wireless interface and capture","when":"omarchy-cmd-present airodump-ng","action":"omarchy-launch-floating-terminal-with-presentation kali-airodump-prompt"},
+  "kali.quick.wordlists": {"icon":"󰉍","label":"Wordlists","description":"Browse /usr/share/wordlists","when":"[[ -d /usr/share/wordlists ]]","action":"omarchy-launch-or-focus-tui 'ls -la /usr/share/wordlists; $SHELL'"},
+
+  // ── Services — `checked` shows a live ✓ when the unit is running ────────
+  "kali.services": {"icon":"󰒓","label":"Service Control","title":"Service Control","aliases":["kali-services"]},
+  "kali.services.postgresql": {"icon":"󱆌","label":"PostgreSQL","description":"Required by Metasploit","when":"systemctl list-unit-files postgresql.service &>/dev/null","checked":"systemctl is-active --quiet postgresql","action":"omarchy-launch-floating-terminal-with-presentation 'sudo systemctl restart postgresql'"},
+  "kali.services.ssh": {"icon":"󰃀","label":"SSH server","when":"systemctl list-unit-files ssh.service &>/dev/null","checked":"systemctl is-active --quiet ssh","action":"omarchy-launch-floating-terminal-with-presentation 'sudo systemctl restart ssh'"},
+  "kali.services.docker": {"icon":"󱁨","label":"Docker","when":"systemctl list-unit-files docker.service &>/dev/null","checked":"systemctl is-active --quiet docker","action":"omarchy-launch-floating-terminal-with-presentation 'sudo systemctl restart docker'"},
+  "kali.services.status": {"icon":"󰒓","label":"All running services","action":"omarchy-launch-or-focus-tui 'systemctl --no-pager --type=service --state=running; $SHELL'"},
+
+  // ── Kali system maintenance ────────────────────────────────────────────
+  "kali.system": {"icon":"","label":"Kali System","title":"Kali System","aliases":["kali-system"]},
+  "kali.system.update": {"icon":"󰄛","label":"Update Kali","description":"apt update && full-upgrade","action":"omarchy-launch-floating-terminal-with-presentation 'sudo apt update && sudo apt full-upgrade'"},
+  "kali.system.metapackages": {"icon":"󰕉","label":"Install metapackage…","description":"kali-linux-default, -large, -everything …","action":"omarchy-launch-floating-terminal-with-presentation kali-metapackage-prompt"},
+  "kali.system.msfdb": {"icon":"󱆌","label":"Init Metasploit DB","when":"omarchy-cmd-present msfdb","action":"omarchy-launch-floating-terminal-with-presentation 'sudo msfdb init'"},
+  "kali.system.regenerate": {"icon":"󰄛","label":"Regenerate this menu","description":"Rebuild from Kali's metadata after installing tools","action":"omarchy-launch-floating-terminal-with-presentation '@@PROJECT@@/lib/generate-kali-menu.py && omarchy menu refresh'"},
+  "kali.system.installed": {"icon":"󰕉","label":"Installed Kali packages","action":"omarchy-launch-or-focus-tui 'dpkg -l | grep -i kali | less'"},
+
+  // ── Install: utilities Kali/Debian does not package ────────────────────
+  // Both come from upstream GitHub releases via 14-omarchy4-extras.sh.
+  // `checked` shows a live tick once the binary is on PATH.
+  "install.utilities": {"icon":"\udb81\udd49","label":"Utilities","title":"Install Utilities"},
+  "install.utilities.voxtype": {"icon":"\udb81\udd0f","label":"Voxtype (voice dictation)","description":"Offline Whisper voice-to-text; SUPER+CTRL+X or hold F9","checked":"omarchy-cmd-present voxtype","action":"omarchy-launch-floating-terminal-with-presentation '@@PROJECT@@/14-omarchy4-extras.sh'"},
+  "install.utilities.localsend": {"icon":"\udb85\udd66","label":"LocalSend (file sharing)","description":"Send files to nearby devices over the LAN","checked":"omarchy-cmd-present localsend || omarchy-cmd-present localsend_app","action":"omarchy-launch-floating-terminal-with-presentation '@@PROJECT@@/14-omarchy4-extras.sh'"},
+
+  // ── Setup > Voxtype ────────────────────────────────────────────────────
+  // Every action below is a real subcommand, checked against `voxtype --help`
+  // and each `setup <cmd> --help` on 1.0.1. The whole branch is hidden when
+  // voxtype is not installed.
+  "setup.voxtype": {"icon":"\udb81\udd0f","label":"Voxtype","title":"Voxtype Dictation","aliases":["voxtype","dictation"],"when":"omarchy-cmd-present voxtype"},
+  "setup.voxtype.status": {"icon":"\udb80\udd6b","label":"Status","description":"Daemon state","when":"omarchy-cmd-present voxtype","action":"omarchy-launch-floating-terminal-with-presentation 'voxtype status'"},
+  "setup.voxtype.configure": {"icon":"\udb80\udf93","label":"Configure","description":"Interactive configuration TUI","when":"omarchy-cmd-present voxtype","action":"omarchy-launch-or-focus-tui 'voxtype configure'"},
+  "setup.voxtype.check": {"icon":"\udb80\udd34","label":"Check system","description":"Verify dependencies and configuration","when":"omarchy-cmd-present voxtype","action":"omarchy-launch-floating-terminal-with-presentation 'voxtype setup check'"},
+  "setup.voxtype.model": {"icon":"\udb81\udd49","label":"Select model","description":"Interactive model selection and download","when":"omarchy-cmd-present voxtype","action":"omarchy-launch-or-focus-tui 'voxtype setup model'"},
+  "setup.voxtype.model-download": {"icon":"\udb81\udd49","label":"Download default model","description":"Whisper model, roughly 150 MB — needed before first use","when":"omarchy-cmd-present voxtype","action":"omarchy-launch-floating-terminal-with-presentation 'voxtype setup --download'"},
+  "setup.voxtype.model-list": {"icon":"\udb81\udd49","label":"List installed models","when":"omarchy-cmd-present voxtype","action":"omarchy-launch-floating-terminal-with-presentation 'voxtype setup model --list'"},
+  "setup.voxtype.vad": {"icon":"\udb81\udd0f","label":"Speech detection model","description":"Silero VAD, used to detect when you stop talking","when":"omarchy-cmd-present voxtype","action":"omarchy-launch-floating-terminal-with-presentation 'voxtype setup vad'"},
+  "setup.voxtype.gpu": {"icon":"\udb83\ude3b","label":"GPU acceleration","description":"Vulkan for Whisper — this laptop has an Iris Plus G7","when":"omarchy-cmd-present voxtype","action":"omarchy-launch-floating-terminal-with-presentation 'voxtype setup gpu'"},
+  "setup.voxtype.compositor": {"icon":"\udb80\udf31","label":"Hyprland integration","description":"Fixes modifier-key interference with the compositor","when":"omarchy-cmd-present voxtype","action":"omarchy-launch-floating-terminal-with-presentation 'voxtype setup compositor hyprland'"},
+  "setup.voxtype.systemd": {"icon":"\udb81\udc93","label":"Install as a service","description":"Run the daemon via a systemd user unit","when":"omarchy-cmd-present voxtype","action":"omarchy-launch-floating-terminal-with-presentation 'voxtype setup systemd'"},
+
+  // ── Power: fix Omarchy's Arch-only hibernate guard ──────────────────────
+  // Omarchy hides Hibernate unless /etc/mkinitcpio.conf.d/omarchy_resume.conf
+  // exists — mkinitcpio is Arch's initramfs generator, so that file can never
+  // exist on Debian and the row is hidden even when hibernate works fine.
+  //
+  // This box: 18.6G swap partition > 15Gi RAM, kernel /sys/power/state lists
+  // "disk", /etc/initramfs-tools/conf.d/resume carries RESUME=UUID=..., and
+  // logind reports CanHibernate=challenge (supported, needs polkit auth).
+  // The guard below is the Debian equivalent of Omarchy's check.
+  "system.hibernate": {"icon":"\udb80\udd01","label":"Hibernate","when":"[[ -f /sys/power/image_size ]] && grep -q disk /sys/power/state && grep -qs '^RESUME=' /etc/initramfs-tools/conf.d/resume","action":"systemctl hibernate"},
+  "system.suspend-then-hibernate": {"icon":"\udb80\udd01","label":"Suspend, then hibernate","description":"Sleep now, hibernate later to save the battery","when":"grep -q disk /sys/power/state && grep -qs '^RESUME=' /etc/initramfs-tools/conf.d/resume","action":"systemctl suspend-then-hibernate"},
+
+  // ── apt equivalents for the pacman rows the generator hides ────────────
+  // Omarchy's Install>Package and Remove>Package call omarchy-pkg-install /
+  // omarchy-pkg-remove, which are pacman wrappers. The generator hides those
+  // on Debian; these give back the same capability via apt.
+  "install.apt": {"icon":"\udb81\udd49","label":"Package (apt)","description":"Search and install a Debian/Kali package","action":"omarchy-launch-floating-terminal-with-presentation kali-apt-install-prompt"},
+  "remove.apt": {"icon":"\udb83\udf4c","label":"Package (apt)","description":"Purge an installed package","action":"omarchy-launch-floating-terminal-with-presentation kali-apt-remove-prompt"},
+  "update.apt": {"icon":"\udb80\udd1b","label":"System (apt)","description":"apt update && full-upgrade","action":"omarchy-launch-floating-terminal-with-presentation 'sudo apt update && sudo apt full-upgrade'"},
+
+  // ── Docs, alongside Omarchy's own Learn entries ────────────────────────
+  "learn.kali": {"icon":"","label":"Kali","action":"omarchy-launch-webapp 'https://www.kali.org/docs/'"},
+  "learn.kali-tools": {"icon":"","label":"Kali Tools","action":"omarchy-launch-webapp 'https://www.kali.org/tools/'"},
+
+  // ── Override of an Omarchy default ─────────────────────────────────────
+  // Omarchy's logout runs `uwsm stop`, but this box starts Hyprland directly
+  // from a TTY (start-hyprland, no uwsm in the process tree), so that call
+  // does nothing. Exit the compositor instead — same as SUPER+M.
+  // Omarchy's own logout runs `uwsm stop`, which is correct ONLY when uwsm
+  // manages the session. Pick the session type at runtime: uwsm stop tears the
+  // systemd user session down cleanly; a TTY-launched session has no uwsm, so
+  // exit the compositor directly instead (same as SUPER+M).
+  "system.logout": {"icon":"\udb80\udf43","label":"Logout","action":"if uwsm check is-active >/dev/null 2>&1; then uwsm stop; else omarchy-hyprland-window-close-all; sleep 1; hyprctl dispatch \"hl.dsp.exit()\"; fi"},

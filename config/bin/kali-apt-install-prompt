@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Debian replacement for Omarchy's "Install > Package" row, which calls
+# omarchy-pkg-install and therefore pacman.
+set -euo pipefail
+
+read -rp "Package to install: " pkg
+[[ -z ${pkg// } ]] && { echo "Nothing to install."; exit 1; }
+
+echo
+echo "Searching..."
+apt-cache search --names-only "^${pkg}$" | head -5
+apt-cache policy "$pkg" 2>/dev/null | head -3
+echo
+
+if ! apt-cache show "$pkg" >/dev/null 2>&1; then
+    echo "No such package: $pkg"
+    echo "Close matches:"
+    apt-cache search "$pkg" | head -8 | sed 's/^/  /'
+    exit 1
+fi
+
+echo "> sudo apt install $pkg"
+echo
+sudo apt update && sudo apt install -y "$pkg"

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Interactive SearchSploit prompt used by the Kali menu.
+set -euo pipefail
+read -rp "Search Exploit-DB for: " term
+[[ -z ${term// } ]] && { echo "Nothing to search."; exit 1; }
+searchsploit $term

@@ -1,0 +1,19 @@
+[Unit]
+Description=Hyprland session
+Documentation=man:systemd.special(7)
+
+# graphical-session.target sets RefuseManualStart=yes — it may only be pulled
+# in as a dependency, never started directly. BindsTo + Before is the standard
+# way a manually-launched Wayland session activates it: starting THIS target
+# drags graphical-session.target up with it, and stopping this one tears it
+# back down.
+#
+# Why this is needed here: Hyprland is launched by hand from a TTY
+# (start-hyprland), not by a session manager, so nothing else ever activates
+# graphical-session.target. Every user unit bound to it — voxtype.service, for
+# one — stays "enabled" but never runs.
+BindsTo=graphical-session.target
+Before=graphical-session.target
+Wants=graphical-session-pre.target
+After=graphical-session-pre.target
+StopWhenUnneeded=yes

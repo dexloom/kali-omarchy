@@ -1,0 +1,17 @@
+# kali-hyprland — hardware video decode/encode for Chromium on Wayland.
+#
+# Install to /etc/chromium.d/vaapi (needs root):
+#   sudo install -m644 config/etc/chromium.d-vaapi /etc/chromium.d/vaapi
+#
+# WHY A ROOT-OWNED FILE: Debian's /usr/bin/chromium launcher sets
+# CHROMIUM_FLAGS="" near the top, wiping anything exported in the environment,
+# then sources /etc/chromium.d/* to build the flag list. That directory is the
+# only place user flags survive. A ~/.local desktop override does not help
+# either: omarchy-launch-browser extracts just the binary from Exec= and drops
+# any flags.
+#
+# Verify afterwards at chrome://gpu — "Video Decode" should read
+# "Hardware accelerated".
+
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform-hint=auto"
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --enable-features=VaapiVideoDecodeLinuxGL,VaapiVideoEncoder,AcceleratedVideoDecodeLinuxGL"

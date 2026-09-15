@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# hypr-clipkey — system-wide Ctrl+C / Ctrl+V / Ctrl+Z emulation for the focused
+# window, driven from Hyprland (SUPER+C / SUPER+V / SUPER+Z).
+#
+# Why: on Wayland there is no X11-style global keygrabber, so a compositor
+# keybind fires FIRST and the app never sees the combo. We then re-emit a
+# plain Ctrl+<key> into the focused window with wtype (virtual-keyboard
+# protocol — works for native Wayland AND XWayland apps).
+#
+# Terminal-awareness: in terminals Ctrl+C is SIGINT and Ctrl+V is a literal
+# quote — the real copy/paste/undo live at Ctrl+Shift+{c,v,z}. So for known
+# terminal classes we emit the shifted combo (the app's native shortcut,
+# which also gets you bracketed paste etc.).
+set -euo pipefail
+
+action="${1:-}"
+case "$action" in
+    copy)   key=c ;;
+    paste)  key=v ;;
+    undo)   key=z ;;
+    *) echo "usage: hypr-clipkey {copy|paste|undo}" >&2; exit 1 ;;
+esac
+
+# Focused window's initial class name, e.g. "qterminal" / "kitty" / "firefox".
+class="$(hyprctl activewindow -j 2>/dev/null | tr -d ' \n' \
+        | sed -n 's/.*"initial":"\([^"]*\)".*/\1/p')"
+class_lc="$(tr '[:upper:]' '[:lower:]' <<<"$class")"
+
+case "$class_lc" in
+    qterminal|kitty|xterm|konsole|foot|alacritty|gnome-terminal|terminology|sakura|terminus)
+        # terminal: use its native copy/paste/undo (Ctrl+Shift+<key>)
+        wtype -M ctrl -M shift "$key"
+        ;;
+    *)
+        # GUI app (Wayland-native or XWayland): plain Ctrl+<key>
+        wtype -M ctrl "$key"
+        ;;
+esac

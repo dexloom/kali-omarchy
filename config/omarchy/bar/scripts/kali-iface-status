@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Bar command module: wireless interface mode indicator.
+#
+# Shows a distinct glyph when any wireless NIC sits in monitor mode — on a
+# pentest box that is state you want visible at all times.
+#
+# CAREFUL WITH `text`: the bar does
+#     outputText = data.text || String(raw || "").trim()
+# and an empty string is FALSY in JS, so `"text":""` makes the bar fall back to
+# printing the raw JSON on the bar. Always emit a non-empty text; use a single
+# space to render blank.
+set -uo pipefail
+
+mon=""
+while read -r iface; do
+  [[ -z $iface ]] && continue
+  type=$(iw dev "$iface" info 2>/dev/null | awk '/type/ {print $2; exit}')
+  if [[ $type == "monitor" ]]; then mon="$iface"; break; fi
+done < <(iw dev 2>/dev/null | awk '/Interface/ {print $2}')
+
+if [[ -n $mon ]]; then
+  printf '{"text":" MON","tooltip":"%s is in MONITOR mode","class":"urgent"}\n' "$mon"
+else
+  printf '{"text":" ","tooltip":"No monitor-mode interface","class":"inactive"}\n'
+fi

@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=PolicyKit Authentication Agent (disabled by kali-hyprland)
+# /etc/xdg/autostart/polkit-mate-authentication-agent-1.desktop carries
+# NotShowIn=GNOME;KDE; so it DOES autostart under Hyprland. uwsm runs XDG
+# autostart entries (a TTY launch did not), so it appeared the moment the
+# session moved to uwsm and took the polkit registration first:
+#   quickshell.service.polkit.listener: failed to register listener:
+#     An authentication agent already exists for the given subject
+# which silently disables Omarchy's own themed root-password modal.
+#
+# A user-level entry of the same name overrides the system one; Hidden=true
+# stops it launching. Remove this file to get MATE's agent back.
+Exec=/bin/true
+Hidden=true

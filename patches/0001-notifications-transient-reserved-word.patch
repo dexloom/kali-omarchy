@@ -1,0 +1,40 @@
+Subject: notifications: rename local `transient`, a reserved word for Qt 6.10's QML parser
+
+Omarchy v4.0.3 targets a newer Quickshell than Debian ships (0.3.1 vs 0.3.0).
+Against Debian's build, `shell/plugins/notifications/Service.qml` fails to parse:
+
+    WARN qml: service plugin load failed for omarchy.notifications:
+    .../notifications/Service.qml:149 Expected token `identifier'
+
+Line 149 declares `var transient`, and `transient` is a future-reserved word in
+the QML JavaScript grammar this Qt builds against. The whole notifications
+service then fails to load, so the shell registers no notification daemon:
+`notify-send` fails, and every omarchy script that reports through
+`omarchy-notification-send` errors with
+
+    Call failed: Process org.freedesktop.Notifications exited with status 1
+
+Renaming the local variable fixes it. The hints KEY "transient" is a string and
+is deliberately left alone — only the identifier is renamed.
+
+Re-check after any Omarchy or Quickshell upgrade: if Debian ships Quickshell
+0.3.1+ this patch may become unnecessary, and `patch` will say so.
+---
+--- a/shell/plugins/notifications/Service.qml
++++ b/shell/plugins/notifications/Service.qml
+@@ -146,11 +146,11 @@
+   // screen; the distinction only decides whether a DND-silenced one is worth
+   // recording at all.
+   function isEphemeral(notification) {
+-    var transient = false
++    var isTransient = false
+     try {
+-      transient = !!(notification.hints && notification.hints["transient"])
+-    } catch (e) { transient = false }
+-    return transient || NotificationLogic.isEphemeralApp(String(notification.appName || ""))
++      isTransient = !!(notification.hints && notification.hints["transient"])
++    } catch (e) { isTransient = false }
++    return isTransient || NotificationLogic.isEphemeralApp(String(notification.appName || ""))
+   }
+ 
+   function handleNotification(notification) {

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Debian replacement for Omarchy's "Remove > Package" row (pacman-based).
+set -euo pipefail
+
+read -rp "Package to remove: " pkg
+[[ -z ${pkg// } ]] && { echo "Nothing to remove."; exit 1; }
+
+if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "ok installed"; then
+    echo "Not installed: $pkg"
+    exit 1
+fi
+
+echo
+echo "This would remove:"
+apt-get -s purge "$pkg" 2>/dev/null | grep -E "^(Remv|Purg)" | sed 's/^/  /'
+echo
+read -rp "Proceed? [y/N] " ok
+[[ ${ok,,} == y* ]] || { echo "Cancelled."; exit 0; }
+
+sudo apt purge -y "$pkg" && sudo apt autoremove -y

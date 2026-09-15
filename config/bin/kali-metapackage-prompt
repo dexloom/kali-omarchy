@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Install a Kali metapackage from the menu.
+set -euo pipefail
+
+packages=(
+  "kali-linux-default:Standard Kali toolset (~4 GB)"
+  "kali-linux-large:Large toolset (~9 GB)"
+  "kali-linux-everything:Every Kali tool (very large)"
+  "kali-tools-top10:The classic top 10"
+  "kali-tools-web:Web application tools"
+  "kali-tools-wireless:Wireless tools"
+  "kali-tools-passwords:Password attack tools"
+  "kali-tools-forensics:Forensics tools"
+)
+
+echo "Kali metapackages:"
+for i in "${!packages[@]}"; do
+  printf "  %d) %-26s %s\n" "$((i+1))" "${packages[$i]%%:*}" "${packages[$i]#*:}"
+done
+echo
+
+read -rp "Choose [1-${#packages[@]}]: " pick
+[[ ! $pick =~ ^[0-9]+$ ]] && { echo "Bad selection."; exit 1; }
+(( pick < 1 || pick > ${#packages[@]} )) && { echo "Out of range."; exit 1; }
+
+pkg="${packages[$((pick-1))]%%:*}"
+echo
+echo "> sudo apt install $pkg"
+echo
+sudo apt update && sudo apt install -y "$pkg"

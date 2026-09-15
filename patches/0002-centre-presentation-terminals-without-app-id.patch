@@ -1,0 +1,89 @@
+Subject: launcher: centre presentation terminals without relying on --app-id
+
+Omarchy floats, centres and sizes its presentation terminals -- the windows
+behind every privileged menu row -- with class rules:
+
+    o.window("(org.omarchy.terminal|...)", { tag = "+floating-window" })
+
+and `omarchy-launch-floating-terminal-with-presentation` earns that class by
+passing `--app-id=org.omarchy.terminal` to xdg-terminal-exec.
+
+That cannot work with QTerminal, the terminal this install uses. QTerminal
+2.4.0's entire command line is `-d -e -h -p -v -w`: no class, no app-id, no
+title. Qt hardcodes the application name, so even exec'ing it through a
+symlink named `org.omarchy.terminal` still maps as class "qterminal"
+(measured). The class rules never match, and privileged prompts tile like any
+other window instead of appearing centred over the desktop.
+
+Rather than change the terminal, attach the rules to the window at spawn time:
+
+    hyprctl dispatch 'hl.dsp.exec_cmd("[float;center;size 875 600] ...")'
+
+which is terminal-agnostic. Verified that the association survives the
+uwsm-app handoff -- Hyprland walks the spawned process tree, so entering a
+systemd scope does not break it -- and that the result is geometrically
+identical to the class-rule path: float=true, 875x600 at [523,253] on a
+1920x1080 output, from both routes.
+
+The presentation script travels via a temp file in XDG_RUNTIME_DIR rather than
+being embedded in the dispatch string: it contains quotes, semicolons and `$?`
+and would otherwise have to survive both Lua string quoting and Hyprland's
+`sh -c`. The temp file removes itself through an EXIT trap. The child
+re-establishes PATH and gum styling itself, because Hyprland spawns it and it
+inherits Hyprland's environment rather than the launcher's.
+
+If the dispatch is ever refused -- a Lua API change after a Hyprland upgrade --
+the script falls through to the upstream exec, so the prompt still appears,
+just not centred.
+
+Drop this patch if the default terminal ever moves to one that can set its own
+app_id (kitty is installed and takes --class); the class rules in
+config/hypr/omarchy4.lua already cover that case and need no change.
+---
+--- a/bin/omarchy-launch-floating-terminal-with-presentation
++++ b/bin/omarchy-launch-floating-terminal-with-presentation
+@@ -10,4 +10,44 @@ source omarchy-restart-gum
+ cmd="$*"
+ presentation_script="omarchy-show-logo; $cmd; if (( \$? != 130 )); then omarchy-show-done; fi"
+ 
++# Upstream depends on --app-id=org.omarchy.terminal so that the class rules in
++# hypr/apps/system.lua float, centre and size this window. QTerminal 2.4.0 --
++# the terminal this install uses -- offers no way to set a Wayland app_id (its
++# only flags are -d -e -h -p -v -w, and Qt hardcodes the application name, so
++# even invoking it through a renamed symlink still maps as class "qterminal").
++# The class rules therefore never match and privileged prompts tile like any
++# other window.
++#
++# Attach the rules to the window this exec spawns instead. That is
++# terminal-agnostic, and it survives the uwsm-app handoff: Hyprland walks the
++# spawned process tree, so moving into a systemd scope does not break the
++# association.
++#
++# The presentation script travels via a temp file rather than being embedded in
++# the dispatch string -- it contains quotes, semicolons and `$?`, which would
++# otherwise have to survive both Lua string quoting and Hyprland's `sh -c`.
++# The child re-establishes PATH and gum styling itself, because it is spawned
++# by Hyprland and inherits Hyprland's environment, not this script's.
++if [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]] && command -v hyprctl >/dev/null 2>&1; then
++  runner=$(mktemp -p "${XDG_RUNTIME_DIR:-/tmp}" omarchy-present.XXXXXXXX)
++  chmod 700 "$runner"
++  {
++    echo '#!/bin/bash'
++    echo 'trap '\''rm -f -- "$0"'\'' EXIT'
++    echo 'export PATH="$HOME/.local/share/omarchy/bin:$HOME/.local/bin:$PATH"'
++    echo 'source omarchy-restart-gum'
++    echo "$presentation_script"
++  } >"$runner"
++
++  if [[ $(hyprctl dispatch \
++      "hl.dsp.exec_cmd(\"[float;center;size 875 600] uwsm-app -- xdg-terminal-exec --app-id=org.omarchy.terminal --title=Omarchy -e $runner\")" \
++      2>&1) == ok* ]]; then
++    exit 0
++  fi
++
++  # Dispatch refused (Lua API drift after a Hyprland upgrade?) -- fall through
++  # to the upstream path so the prompt still appears, just not centred.
++  rm -f -- "$runner"
++fi
++
+ exec setsid uwsm-app -- xdg-terminal-exec --app-id=org.omarchy.terminal --title=Omarchy -e bash -c "$presentation_script"

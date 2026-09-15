@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Bar command module: VPN / tunnel indicator.
+# Emits Waybar-style JSON, which the Omarchy bar understands for type=command
+# modules (see shell/plugins/bar/README.md "Custom user modules").
+set -uo pipefail
+
+tun=$(ip -o link show type tun 2>/dev/null | awk -F': ' '$2 !~ /^lo/ {print $2; exit}')
+wg=$(ip -o link show type wireguard 2>/dev/null | awk -F': ' '{print $2; exit}')
+iface="${tun:-$wg}"
+
+if [[ -n $iface ]]; then
+  addr=$(ip -4 -o addr show dev "$iface" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+  printf '{"text":"󰦝","tooltip":"VPN up: %s %s","class":"active"}\n' "$iface" "${addr:-}"
+else
+  printf '{"text":"󰦞","tooltip":"No VPN tunnel","class":"inactive"}\n'
+fi

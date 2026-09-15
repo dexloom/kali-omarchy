@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.bak-*
+*.shadowed-*
+
+# Generated for the local machine by lib/generate-kali-menu.py.
+# It embeds absolute paths, so it is built by the deploy, never committed.
+config/omarchy/extensions/omarchy-menu.jsonc

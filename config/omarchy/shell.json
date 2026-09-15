@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "idle": {
+    "screensaver": 150,
+    "lock": 300
+  },
+  "bar": {
+    "position": "top",
+    "transparent": true,
+    "centerAnchor": "omarchy.clock",
+    "layout": {
+      "left": [
+        {
+          "id": "omarchy.menu"
+        },
+        {
+          "id": "omarchy.workspaces"
+        }
+      ],
+      "center": [
+        {
+          "id": "omarchy.indicators"
+        },
+        {
+          "id": "omarchy.clock",
+          "format": "dddd HH:mm",
+          "formatAlt": "d MMMM 'W'ww yyyy",
+          "verticalFormat": "HH\n—\nmm"
+        }
+      ],
+      "right": [
+        {
+          "id": "kali.iface",
+          "type": "command",
+          "exec": "~/.config/omarchy/bar/scripts/kali-iface-status",
+          "interval": 10,
+          "tooltip": "Wireless mode"
+        },
+        {
+          "id": "kali.vpn",
+          "type": "command",
+          "exec": "~/.config/omarchy/bar/scripts/kali-vpn-status",
+          "interval": 5,
+          "tooltip": "VPN / tun interface"
+        },
+        {
+          "id": "omarchy.tray"
+        },
+        {
+          "id": "omarchy.system-update"
+        },
+        {
+          "id": "omarchy.network"
+        },
+        {
+          "id": "omarchy.bluetooth"
+        },
+        {
+          "id": "omarchy.audio"
+        },
+        {
+          "id": "omarchy.power"
+        }
+      ]
+    }
+  }
+}
