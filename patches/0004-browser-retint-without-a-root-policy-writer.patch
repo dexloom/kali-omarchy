@@ -1,0 +1,57 @@
+Subject: browser retint: skip quietly when the privileged half is not installed
+
+Every theme switch printed three errors before this:
+
+    omarchy-theme-set-browser: line 6:
+      /home/…/.local/share/omarchy/install/helpers/browser-policy.sh:
+      No such file or directory
+    omarchy-theme-set-browser: line 12: browser_policy_theme_hex: command not found
+    omarchy-theme-set-browser-policy: expected six lowercase hex digits, got ''
+
+They are harmless -- nothing was written and the theme applied anyway -- but
+they appear on every single theme change, and the obvious reading of them is
+that a file is missing and ought to be restored. It should not be.
+
+What the script does is tint the Chromium/Chrome/Edge/Brave window frame to
+the theme colour, by writing a managed enterprise policy into
+
+    /etc/chromium/policies/managed/color.json
+
+That is a root-owned path, and upstream reaches it without a password prompt
+because an Omarchy install puts two things in place that a checkout does not:
+`/usr/bin/omarchy-theme-set-browser-policy`, and the sudoers rule in
+`etc/sudoers.d/omarchy-theme-browser` that names exactly that path. This repo
+installs neither -- it runs Omarchy from a checkout and adds no sudoers rules
+-- and sudo on this box asks for a password.
+
+So restoring the missing helper would not fix anything. It would replace a
+harmless message with `sudo` asking for a password from inside a theme switch,
+which runs as `bash -lc` out of the shell with no terminal to type into: a
+theme change would stall or fail where it currently succeeds. The missing file
+is the benign outcome; the noise is the only real problem.
+
+This patch makes the script return before it sources anything when the helper
+is absent, which is the same amount of work it does today and none of the
+noise. Where the privileged half IS installed -- an ordinary Arch Omarchy --
+the guard passes and the script behaves exactly as upstream wrote it, so this
+is safe to carry across an update.
+
+diff -u a/bin/omarchy-theme-set-browser b/bin/omarchy-theme-set-browser
+--- a/bin/omarchy-theme-set-browser
++++ b/bin/omarchy-theme-set-browser
+@@ -3,7 +3,14 @@
+ # omarchy:summary=Apply the current theme color to Chromium, Chrome, Edge, and Brave
+ # omarchy:hidden=true
+ 
+-source "$OMARCHY_PATH/install/helpers/browser-policy.sh"
++# Kali: the privileged half of the browser retint is not installed on this
++# box, so there is nothing here to do. Returning before the helpers are
++# sourced is the whole change -- see the patch header for why reaching root
++# would be worse than skipping this.
++BROWSER_POLICY_HELPERS="$OMARCHY_PATH/install/helpers/browser-policy.sh"
++[[ -r $BROWSER_POLICY_HELPERS ]] || exit 0
++
++source "$BROWSER_POLICY_HELPERS"
+ 
+ CHROMIUM_THEME=$HOME/.local/state/omarchy/current/theme/chromium.theme
+ THEME_HEX_COLOR=$BROWSER_POLICY_DEFAULT_COLOR

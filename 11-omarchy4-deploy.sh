@@ -58,6 +58,39 @@ else
     warn "step below will stop the deploy if it was never built"
 fi
 
+# ── 0a. Complete the Omarchy checkout ─────────────────────────────────────
+# A sparse checkout that leaves out themes/ makes the menu's Theme row open an
+# empty picker. Nothing errors and nothing is logged: omarchy-theme-list finds
+# no directories, omarchy-theme-switcher has no rows to offer, and the session
+# runs with no palette at all — omarchy-theme-current reports "Unknown" and
+# every asset a theme carries (its backgrounds, its lock image, its per-app
+# colour files) is simply absent. It reads as a dead menu item and it is a
+# missing directory.
+#
+# Nothing is vendored here. The themes are restored into the checkout the user
+# obtained themselves, exactly as upstream ships them and with every asset
+# intact, by widening that checkout rather than by copying anything into this
+# repo.
+if [[ -d $OMARCHY/.git && ! -d $OMARCHY/themes ]]; then
+    if [[ "$(git -C "$OMARCHY" config --get core.sparseCheckout 2>/dev/null || true)" == true ]]; then
+        say "Restoring themes to the Omarchy checkout"
+        if git -C "$OMARCHY" sparse-checkout add themes >/dev/null 2>&1; then
+            ok "restored $(find "$OMARCHY/themes" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ') themes with their assets"
+        else
+            # omacom/omarchy is cloned blob:none, so widening the checkout has
+            # to fetch the theme blobs. Being offline is the ordinary reason to
+            # land here, and it is not a reason to stop the deploy.
+            warn "could not restore themes/ — this is a blob:none clone and the fetch needs network"
+            warn "  fix, when online: git -C ${OMARCHY/#$HOME/\~} sparse-checkout add themes"
+        fi
+    else
+        warn "the Omarchy checkout has no themes/ and is not sparse"
+        warn "  the menu's Theme row will open an empty picker"
+    fi
+elif [[ -d $OMARCHY/themes ]]; then
+    ok "themes present ($(find "$OMARCHY/themes" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '))"
+fi
+
 # ── 0b. Patch the Omarchy checkout ────────────────────────────────────────
 # Omarchy 4.0.3 targets a newer Quickshell than Debian ships, and one QML file
 # does not parse against Debian's build. Each patch explains itself; they are
@@ -337,6 +370,41 @@ elif [[ "$(fc-match -f '%{family[0]}' omarchy 2>/dev/null)" != "omarchy" ]]; the
     warn "  fix: $PROJECT/13-omarchy4-fonts.sh"
 else
     ok "icon fonts present"
+fi
+
+# ── 3e. Themes ────────────────────────────────────────────────────────────
+# omarchy-theme-list reads this directory unconditionally, and `omarchy theme
+# install` clones into it. Absent, every theme listing prints a find(1) error
+# to stderr before printing the list.
+mkdir -p "$HOME/.config/omarchy/themes"
+
+# A box that has never had a theme set has no palette and no background:
+# ~/.local/state/omarchy/current does not exist, so the shell falls back to its
+# built-in colours and none of what was just restored is in play. Upstream's
+# own installer seeds Tokyo Night at this point. This only fires when nothing
+# is set, so a theme the user chose is never overwritten.
+theme_name_file="$HOME/.local/state/omarchy/current/theme.name"
+if [[ -s $theme_name_file ]]; then
+    ok "theme already set: $(<"$theme_name_file")"
+elif [[ -d $OMARCHY/themes ]]; then
+    # Omarchy's own default, and whatever is there if a later version drops it.
+    seed_theme="Tokyo Night"
+    [[ -d $OMARCHY/themes/tokyo-night ]] || seed_theme=$(
+        find "$OMARCHY/themes" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort | head -1)
+    say "Seeding the default theme (none is set): ${seed_theme:-none available}"
+    seed=(env "OMARCHY_PATH=$OMARCHY" "PATH=$OMARCHY/bin:$PATH")
+    # With no live compositor there is no shell to hand the new palette to, and
+    # theme-set's IPC calls would time out one by one. Headless skips them and
+    # still writes the theme and its background link, which is what the first
+    # real login needs.
+    [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]] || seed+=("OMARCHY_THEME_HEADLESS=1")
+    if [[ -n $seed_theme ]] \
+       && "${seed[@]}" "$OMARCHY/bin/omarchy-theme-set" "$seed_theme" >/dev/null 2>&1 \
+       && [[ -s $theme_name_file ]]; then
+        ok "theme set: $(<"$theme_name_file")"
+    else
+        warn "could not seed a theme — pick one from the menu: Style > Theme"
+    fi
 fi
 
 # ── 4. Report ─────────────────────────────────────────────────────────────

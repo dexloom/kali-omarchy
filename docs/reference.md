@@ -31,7 +31,7 @@ Built against **Omarchy v4.0.3** (`omacom/omarchy`, branch `quattro`).
 sudo ./10-omarchy4-packages.sh   # packages — the only step needing your password
 ./13-omarchy4-fonts.sh           # icon fonts, downloads ~2.3 MB
 ./11-omarchy4-deploy.sh          # config — idempotent, safe to re-run
-./12-omarchy4-verify.sh          # 61 assertions, changes nothing
+./12-omarchy4-verify.sh          # 68 assertions, changes nothing
 ```
 
 Then start Hyprland (`start-hyprland` from a TTY, or pick it at the display
@@ -112,7 +112,7 @@ All of it works on tiled *and* floating windows.
 ```
 10-omarchy4-packages.sh      apt packages (sudo)
 11-omarchy4-deploy.sh        generate + patch + deploy config
-12-omarchy4-verify.sh        61 assertions, changes nothing
+12-omarchy4-verify.sh        68 assertions, changes nothing
 13-omarchy4-fonts.sh         icon fonts (downloads)
 14-omarchy4-extras.sh        Voxtype + OSD, LocalSend
 15-nvidia-offload.sh         NVIDIA driver + CUDA (sudo, reboot)
@@ -225,8 +225,8 @@ since `SUPER+C`/`SUPER+V` are close-window and toggle-floating.
 
 ## Patching the Omarchy checkout
 
-Omarchy assumes Arch and its own defaults; two of those assumptions do not hold
-here. Patches in `patches/` are applied to `~/.local/share/omarchy` by the
+Omarchy assumes Arch and its own defaults; several of those assumptions do not
+hold here. Patches in `patches/` are applied to `~/.local/share/omarchy` by the
 deploy, are idempotent, and report if upstream has fixed the issue.
 
 - `0001-notifications-transient-reserved-word.patch` — Omarchy v4.0.3 targets
@@ -239,6 +239,17 @@ deploy, are idempotent, and report if upstream has fixed the issue.
   QTerminal cannot set one, so the launcher asks Hyprland to float and centre
   the window at spawn time instead. See
   [The centred admin-password prompt](#the-centred-admin-password-prompt).
+- `0003-screensaver-without-ttfx.patch` — Omarchy's screensaver needs `ttfx`
+  (AUR, no Debian equivalent) and a terminal that can be handed a window class.
+  Points the launcher at this repo's renderer and at a terminal that is
+  installed. See [The screensaver](../README.md#the-screensaver).
+- `0004-browser-retint-without-a-root-policy-writer.patch` — tinting the
+  Chromium window frame to the theme colour means writing a managed policy
+  under `/etc` as root, which upstream reaches through a packaged binary and a
+  passwordless sudoers rule. A checkout has neither and this box's `sudo` asks
+  for a password, so enabling it would put a password prompt inside every theme
+  switch. The patch makes the script return before it sources anything, which
+  is the same work it already did without the three errors it printed doing it.
 
 **Re-apply after any Omarchy update** — just re-run the deploy.
 
@@ -891,7 +902,7 @@ Undo: `rm -rf ~/.local/share/fonts/NerdFontsSymbols ~/.local/share/fonts/omarchy
 10-omarchy4-packages.sh    apt packages (sudo)
 13-omarchy4-fonts.sh       icon fonts
 11-omarchy4-deploy.sh      generate + deploy config
-12-omarchy4-verify.sh      61 assertions
+12-omarchy4-verify.sh      68 assertions
 lib/
   generate-kali-menu.py    builds the Kali menu from Kali's metadata
   hide-kali-from-apps.py   Apps dedup (reversible)

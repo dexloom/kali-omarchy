@@ -26,6 +26,7 @@ cannot set a Wayland `app_id`. Each one is documented where it bites.
 | Wifi / Bluetooth / Audio | Quickshell bar panels | `SUPER+CTRL+W` / `+B` / `+A` |
 | Lock screen | `omarchy.lock` plugin | `SUPER+ESCAPE` |
 | Screensaver | `kali-screensaver` (this repo) | on idle, or via the menu |
+| Themes | Omarchy's own 22, with every asset | `SUPER+SPACE` → Style → Theme |
 | Voice dictation | Voxtype + waveform OSD | via the menu |
 
 The Kali menu is **generated**, not hand-written: `lib/generate-kali-menu.py`
@@ -93,7 +94,7 @@ safely.
 | `10-omarchy4-packages.sh` | **yes** | quickshell, uwsm, lua5.4, inotify-tools, QtQuick.Effects, fonts, VA-API, ffmpeg, pipewire-alsa, libxcb-cursor0 |
 | `13-omarchy4-fonts.sh` | no | upstream Symbols Nerd Font + Omarchy's own icon font |
 | `11-omarchy4-deploy.sh` | no | generates the Kali menu, patches the Omarchy checkout, installs config, adds bind descriptions, masks conflicting units, dedups the Apps list |
-| `12-omarchy4-verify.sh` | no | 61 assertions; changes nothing |
+| `12-omarchy4-verify.sh` | no | 68 assertions; changes nothing |
 | `14-omarchy4-extras.sh` | part | Voxtype + OSD (no root), LocalSend `.deb` (root) |
 | `15-nvidia-offload.sh` | **yes** | proprietary NVIDIA driver for compute, then **reboot** |
 | `16-voxtype-gpu.sh` | no | swaps Voxtype to the Vulkan (or `--cuda`) build; `--pin-device N` pins the GPU |
@@ -191,6 +192,46 @@ docs/
 skills/hermes/         post-conversion management skills
 ```
 
+## Themes
+
+All 22 of Omarchy's themes, exactly as upstream ships them and with every asset
+they carry: backgrounds, the lock-screen image, `preview.png`, the palette, and
+the per-application colour files for the terminal, btop, Chromium, Neovim,
+Helix, Obsidian and the rest. Nothing is vendored into this repo and nothing is
+redrawn — the deploy widens your own Omarchy checkout so the real files are
+there.
+
+They were missing for a mundane reason. Omarchy is commonly cloned sparsely,
+and a sparse checkout of `applications bin config default shell` leaves out
+`themes/`. Nothing then errors: `omarchy-theme-list` finds no directories, the
+**Style → Theme** row opens a picker with nothing in it, and the session runs
+with no palette at all — `omarchy-theme-current` reports `Unknown`. It reads
+as a dead menu item and it is a missing directory.
+
+`11-omarchy4-deploy.sh` restores it, creates `~/.config/omarchy/themes` (where
+`omarchy theme install` clones, and the first path every theme listing reads),
+and seeds Omarchy's default theme when none is set — never overwriting one you
+picked.
+
+Two things then behave differently here than on Arch:
+
+- **Window borders.** Upstream loads the theme's `hyprland.lua` from
+  `default/hypr/omarchy.lua`, a file this box never reaches: its config is
+  Hyprland's own example template plus `config/hypr/omarchy4.lua`. So the
+  overlay loads the theme file itself, last and inside a `pcall`. Without it
+  every other part of a theme applied and the borders alone stayed on the
+  example config's cyan/green gradient.
+- **The browser retint is off.** Tinting Chromium's window frame means writing
+  a managed policy under `/etc` as root, which upstream reaches through a
+  packaged binary and a passwordless sudoers rule. A checkout has neither, so
+  patch `0004` skips it rather than putting a password prompt inside every
+  theme switch.
+
+One known gap, and it is Kali's rather than ours: `code --install-extension`
+segfaults on this box for any extension, because `/usr/bin/code` is a shim that
+execs `code-oss`. VS Code therefore does not pick up the theme. Everything else
+does.
+
 ## The screensaver
 
 Omarchy's screensaver runs `ttfx`, a text-effects renderer packaged only on the
@@ -238,7 +279,7 @@ They are left alone deliberately.
 ## Status
 
 Verified end to end on one machine: Kali Rolling 2026.3, Intel Iris Plus +
-NVIDIA MX350, LightDM, QTerminal. `12-omarchy4-verify.sh` reports **61 passed,
+NVIDIA MX350, LightDM, QTerminal. `12-omarchy4-verify.sh` reports **68 passed,
 0 failed**.
 
 Nothing is currently known to be broken. Omarchy's own screensaver needed

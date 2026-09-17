@@ -395,6 +395,77 @@ else
     S "Kali logo not found — screensaver falls back to its built-in dragon"
 fi
 
+H "Themes"
+# The menu's Theme row runs omarchy-theme-switcher, which lists directories
+# under $OMARCHY_PATH/themes. With that directory absent the row opens a picker
+# with nothing in it: no error, no log line, no indication of why. That is what
+# "the Themes item opens nothing" looks like from the outside, so each check
+# below is a separate way it can come back.
+theme_count=0
+if [[ -d $OMARCHY/themes ]]; then
+    theme_count=$(find "$OMARCHY/themes" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+fi
+if (( theme_count > 0 )); then
+    P "$theme_count themes in the Omarchy checkout"
+else
+    F "no themes in $OMARCHY/themes — the Theme menu row opens an empty picker"
+    F "  fix: git -C ${OMARCHY/#$HOME/\~} sparse-checkout add themes"
+fi
+
+# A theme directory existing says nothing about whether it carries what a theme
+# needs. colors.toml is the palette every generated config is derived from, and
+# a theme with no background leaves the desktop on whatever was there before —
+# which is exactly how a partial restore would look like a working one.
+if (( theme_count > 0 )); then
+    bare=()
+    for t in "$OMARCHY"/themes/*/; do
+        [[ -d $t ]] || continue
+        name=$(basename "$t")
+        [[ -f $t/colors.toml ]] || { bare+=("$name:colors.toml"); continue; }
+        compgen -G "$t/backgrounds/*" >/dev/null || bare+=("$name:backgrounds")
+    done
+    if (( ${#bare[@]} == 0 )); then
+        P "every theme carries its palette and backgrounds"
+    else
+        F "themes missing assets: ${bare[*]}"
+    fi
+fi
+
+# Where `omarchy theme install` clones, and the first path omarchy-theme-list
+# reads. Absent, listings still work but print a find(1) error first.
+if [[ -d $HOME/.config/omarchy/themes ]]; then
+    P "~/.config/omarchy/themes present"
+else
+    F "~/.config/omarchy/themes missing — theme listings print a find(1) error"
+fi
+
+# A box that has never had a theme set has no palette at all: nothing under
+# ~/.local/state/omarchy/current exists, so none of the generated per-app theme
+# files were ever written and the shell is on its built-in fallback colours.
+cur="$HOME/.local/state/omarchy/current"
+if [[ -s $cur/theme.name && -f $cur/theme/colors.toml ]]; then
+    P "theme applied: $(<"$cur/theme.name")"
+else
+    F "no theme applied — re-run 11-omarchy4-deploy.sh, or pick one in Style > Theme"
+fi
+
+# The background link both the desktop and the lock screen read.
+if [[ -e $cur/background ]]; then
+    P "background linked ($(basename "$(readlink -f "$cur/background")"))"
+else
+    F "no current background — the desktop falls back to a flat colour"
+fi
+
+# Patch 0004. Without it every theme switch prints three errors about a
+# privileged helper this box deliberately does not install.
+if [[ -f $OMARCHY/bin/omarchy-theme-set-browser ]]; then
+    if grep -q "BROWSER_POLICY_HELPERS" "$OMARCHY/bin/omarchy-theme-set-browser"; then
+        P "omarchy-theme-set-browser patched (0004)"
+    else
+        F "omarchy-theme-set-browser unpatched — theme switches print 3 errors each"
+    fi
+fi
+
 H "Live session"
 # Resolve the live compositor ourselves rather than trusting the caller's env.
 # Hyprland leaves an instance directory behind for every session that has run,
@@ -419,6 +490,26 @@ if command -v hyprctl >/dev/null && hyprctl version >/dev/null 2>&1; then
     pgrep -f 'quickshell.*omarchy' >/dev/null \
         && P "omarchy shell process is up" \
         || F "omarchy shell not running (journalctl -t omarchy-shell -n 50)"
+
+    # The compositor's own colours. Upstream loads the current theme's
+    # hyprland.lua from default/hypr/omarchy.lua, a file this box never reaches
+    # — its config is Hyprland's example template plus config/hypr/omarchy4.lua,
+    # which loads the theme file itself. Without that the borders keep the
+    # example config's cyan/green gradient while every other part of the theme
+    # applies, so the desktop looks themed apart from the one thing framing
+    # every window.
+    theme_hypr="$HOME/.local/state/omarchy/current/theme/hyprland.lua"
+    if [[ -f $theme_hypr ]]; then
+        want=$(sed -n 's/^local active_border_color = "#\([0-9a-fA-F]\{6\}\)".*/\1/p' "$theme_hypr" | head -1)
+        got=$(hyprctl getoption general:col.active_border 2>/dev/null | head -1)
+        if [[ -z $want ]]; then
+            S "theme sets no plain border colour — cannot compare"
+        elif [[ ${got,,} == *"${want,,}"* ]]; then
+            P "window borders follow the theme (#$want)"
+        else
+            F "window borders do not follow the theme — want #$want, hyprctl reports: $got"
+        fi
+    fi
 
     # A stuck invisible cursor is invisible in every sense: nothing logs it,
     # and the only symptom is that the mouse pointer is gone for the rest of

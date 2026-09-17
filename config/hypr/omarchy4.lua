@@ -327,3 +327,39 @@ hl.bind(mod .. " + L", hl.dsp.exec_cmd("omarchy-hyprland-workspace-layout-toggle
 -- Shell ------------------------------------------------------------------
 hl.bind(mod .. " + SHIFT + R", hl.dsp.exec_cmd("omarchy-restart-shell"),
     { description = "Restart Omarchy shell" })
+
+-------------------------------
+---- CURRENT THEME          ----
+-------------------------------
+-- Colours for the compositor itself, from whichever theme is selected.
+--
+-- omarchy-theme-set stages a hyprland.lua into
+-- ~/.local/state/omarchy/current/theme/ for EVERY theme — the handful that
+-- ship one have theirs copied, and the rest have one generated from
+-- colors.toml — and upstream loads it from default/hypr/omarchy.lua with
+--
+--     require_optional.module("omarchy.current.theme.hyprland")
+--
+-- This box never reaches that line. The config here is Hyprland's own example
+-- file plus this overlay, not Omarchy's Lua tree, so nothing loaded the
+-- theme's file and window borders kept the example config's cyan/green
+-- gradient no matter which theme was chosen. Everything else a theme carries
+-- — terminal palettes, the bar, the lock screen, the background — was already
+-- being applied; the compositor's own colours were the one thing left out.
+--
+-- dofile() rather than require(): the path is known exactly, so there is no
+-- need to add ~/.local/state to package.path, and no module name to collide
+-- with anything else.
+--
+-- LAST IN THIS FILE, AND WRAPPED IN pcall, both deliberately. Last, because
+-- the example config hardcodes its border colours near the top of
+-- hyprland.lua and the later write is the one that survives. pcall, because a
+-- theme that fails to load must not take the overlay with it — every bind
+-- above is already registered by the time this runs, so the cost of a bad
+-- theme file is its own colours, not the keyboard.
+local theme_lua = os.getenv("HOME") .. "/.local/state/omarchy/current/theme/hyprland.lua"
+local theme_f = io.open(theme_lua, "r")
+if theme_f then
+    theme_f:close()
+    pcall(dofile, theme_lua)
+end

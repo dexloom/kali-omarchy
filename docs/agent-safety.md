@@ -100,7 +100,7 @@ that appeared to succeed.
 
 `12-omarchy4-verify.sh` needs no sudo and changes nothing. It is the only
 statement about the system's state that is worth making. Report its tail
-verbatim — "61 passed, 0 failed, 0 skipped" — rather than summarising it as
+verbatim — "68 passed, 0 failed, 0 skipped" — rather than summarising it as
 "everything works".
 
 ### Resolve the Hyprland instance every time
