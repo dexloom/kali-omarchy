@@ -1,0 +1,122 @@
+Subject: idle: rebuild the idle monitor when the timeout changes
+
+Editing idle.screensaver / idle.lock in ~/.config/omarchy/shell.json on a
+running shell leaves the idle monitor permanently dead: the screensaver never
+appears and the session never idle-locks again, indefinitely, with no error.
+`omarchy-shell idle status` keeps reporting the new timeouts and
+"enabled": true, so every diagnostic insists the feature works; only the
+absence of `idle-monitor:` lines in the journal gives it away.
+
+The cause is upstream, in Quickshell. `Quickshell.Wayland.IdleMonitor`
+registers its ext-idle-notification with the compositor once, at construction.
+Writing `timeout` on a live monitor tears that registration down without
+re-arming it, leaving an object that is enabled, correctly configured and
+never notified again (quickshell-mirror/quickshell#938; omarchy#8038 / #9496).
+
+That makes this more than a hand-edit hazard on a box that carries a
+power-profile idle policy: `idle-profile-monitor` rewrites idle.screensaver /
+idle.lock in shell.json whenever the AC/battery state changes, which is
+exactly the live timeout write that kills the monitor. The setting that keeps
+screensaver and lock timeouts sensible is also what silences them.
+
+The documented workaround is to never reconfigure a live monitor, only create
+and destroy it. This patch moves the IdleMonitor into a Quickshell LazyLoader
+and rebuilds the loader whenever firstIdleTimeoutSeconds changes, so the new
+timeout is registered afresh. root.isIdle reads through the loader (false
+while it is between generations) and the four references to the old direct
+object are updated. Any in-flight idle cycle is cancelled on re-arm so stale
+screensaver/lock timers do not fire with the previous delays.
+
+Behavior is unchanged when the timeouts do not change: no re-arm, no extra
+compositor registration.
+
+diff -u a/shell/plugins/services/idle/Service.qml b/shell/plugins/services/idle/Service.qml
+--- a/shell/plugins/services/idle/Service.qml
++++ b/shell/plugins/services/idle/Service.qml
+@@ -26,6 +26,11 @@ Item {
+   readonly property bool idleEnabled: stayAwakeStateLoaded && !stayAwake
+   readonly property string screensaverClass: "org.omarchy.screensaver"
+ 
++  // Live idle state. IdleMonitor lives inside idleMonitorLoader so it can be
++  // destroyed and rebuilt when the configured timeout changes; a live timeout
++  // write leaves the monitor enabled but permanently silent.
++  readonly property bool isIdle: idleMonitorLoader.item ? idleMonitorLoader.item.isIdle : false
++
+   property bool stayAwake: false
+   property bool stayAwakeStateLoaded: false
+   property bool hasPendingStayAwakePersist: false
+@@ -63,6 +68,18 @@ Item {
+     return true
+   }
+ 
++  function rearmIdleMonitor() {
++    // Quickshell's IdleMonitor registers the ext-idle-notification with the
++    // compositor once, at construction. Writing `timeout` on a live monitor
++    // tears that registration down without re-arming, so it stays enabled but
++    // never reports idle again (quickshell#938 / omarchy#8038). Destroy and
++    // rebuild it so the new timeout is registered.
++    if (!idleMonitorLoader.active) return
++    cancelIdleCycle("idle-monitor-rearm")
++    idleMonitorLoader.active = false
++    Qt.callLater(function() { idleMonitorLoader.active = true })
++  }
++
+   function launchScreensaver() {
+     root.screensaverStartedThisCycle = true
+     screensaverLaunchGraceTimer.restart()
+@@ -171,10 +188,10 @@ Item {
+   }
+ 
+   function handleIdleChanged() {
+-    logEvent("idle-monitor", idleMonitor.isIdle ? "idle" : "active")
++    logEvent("idle-monitor", root.isIdle ? "idle" : "active")
+     if (!root.idleEnabled) return
+ 
+-    if (idleMonitor.isIdle) startIdleCycle()
++    if (root.isIdle) startIdleCycle()
+     else handleActiveSignal()
+   }
+ 
+@@ -184,7 +201,7 @@ Item {
+       stayAwake: root.stayAwake,
+       stayAwakeStateLoaded: root.stayAwakeStateLoaded,
+       stayAwakeStatePath: root.stayAwakeStatePath,
+-      idle: idleMonitor.isIdle,
++      idle: root.isIdle,
+       inIdleCycle: root.idledThisCycle,
+       screensaverStarted: root.screensaverStartedThisCycle,
+       screensaver: root.screensaverTimeoutSeconds,
+@@ -248,12 +265,18 @@ Item {
+     return applyStayAwake(!value, true, "ipc")
+   }
+ 
+-  IdleMonitor {
+-    id: idleMonitor
+-    enabled: root.idleEnabled
+-    timeout: root.firstIdleTimeoutSeconds
+-    respectInhibitors: true
+-    onIsIdleChanged: root.handleIdleChanged()
++  onFirstIdleTimeoutSecondsChanged: rearmIdleMonitor()
++
++  LazyLoader {
++    id: idleMonitorLoader
++    active: true
++
++    IdleMonitor {
++      enabled: root.idleEnabled
++      timeout: root.firstIdleTimeoutSeconds
++      respectInhibitors: true
++      onIsIdleChanged: root.handleIdleChanged()
++    }
+   }
+ 
+   Timer {
+@@ -275,7 +298,7 @@ Item {
+     interval: 3000
+     repeat: false
+     onTriggered: {
+-      if (root.idleEnabled && root.idledThisCycle && root.screensaverStartedThisCycle && root.screensaverWindowCount === 0 && !idleMonitor.isIdle) {
++      if (root.idleEnabled && root.idledThisCycle && root.screensaverStartedThisCycle && root.screensaverWindowCount === 0 && !root.isIdle) {
+         root.cancelIdleCycle("screensaver-not-running")
+       }
+     }
