@@ -1,0 +1,43 @@
+#!/bin/sh
+# Brightness stepping via systemd-logind DBus (SetBrightness).
+# Needed because this system's udev rules tag the backlight for the seat
+# but never add "uaccess", so sysfs is root-writable only and brightnessctl
+# 0.5.x (no logind fallback) fails with "Permission denied".
+# Usage: brightness-step up|down
+
+DEV=intel_backlight
+DIR=/sys/class/backlight/$DEV
+
+MAX=$(cat "$DIR/max_brightness") || exit 1
+CUR=$(cat "$DIR/brightness") || exit 1
+STEP=$((MAX / 20)) # 5% of range per press
+
+case "$1" in
+up) NEW=$((CUR + STEP)) ;;
+down) NEW=$((CUR - STEP)) ;;
+*)
+    echo "usage: brightness-step up|down" >&2
+    exit 1
+    ;;
+esac
+
+[ "$NEW" -lt 1 ] && NEW=1
+[ "$NEW" -gt "$MAX" ] && NEW=$MAX
+
+# Session id: env first (set inside Hyprland), else the active one for this user.
+SID=${XDG_SESSION_ID:-}
+if [ -z "$SID" ]; then
+    SID=$(loginctl list-sessions --no-legend 2>/dev/null |
+        awk -v u="$(id -un)" '$1 ~ /^[0-9]+$/ && $3 == u {print $1}' |
+        while read -r s; do
+            [ "$(loginctl show-session "$s" -p Active --value 2>/dev/null)" = "yes" ] &&
+                { echo "$s"; break; }
+        done)
+fi
+[ -n "$SID" ] || {
+    echo "no active logind session found" >&2
+    exit 1
+}
+
+busctl call org.freedesktop.login1 "/org/freedesktop/login1/session/$SID" \
+    org.freedesktop.login1.Session SetBrightness ssu backlight "$DEV" "$NEW"

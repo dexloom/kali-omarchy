@@ -1,0 +1,14 @@
+[Unit]
+Description=Custom lid policy: suspend on battery, dpms-off on AC
+# Part of the graphical session: dies with it, starts with it.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/home/fix/.local/bin/lid-policy
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=hyprland-session.target

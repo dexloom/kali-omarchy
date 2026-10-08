@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Lid policy for this laptop (RedmiBook 16 2021, Hyprland session).
+
+  lid close + on battery -> lock + suspend
+  lid close + on AC      -> screen off (DPMS), machine keeps running
+  lid open               -> screen back on
+
+logind's built-in lid handling can't do per-power-source actions, so this
+daemon holds a handle-lid-switch BLOCK inhibitor (logind then does nothing on
+lid events), watches logind's LidClosed property, reads AC state from the
+kernel, and applies the policy itself.
+
+Runs inside the graphical session (needs hyprctl for DPMS). Started by
+lid-policy.service under hyprland-session.target.
+"""
+
+import os
+import pathlib
+import subprocess
+import sys
+import time
+
+import dbus
+from dbus.mainloop.glib import DBusGMainLoop
+from gi.repository import GLib
+
+NAME = "lid-policy"
+LOGIN1 = "org.freedesktop.login1"
+LOGIN1_PATH = "/org/freedesktop/login1"
+LOGIN1_IFACE = "org.freedesktop.login1.Manager"
+PROPS = "org.freedesktop.DBus.Properties"
+AC_DIR = pathlib.Path("/sys/class/power_supply")
+
+
+def log(msg: str) -> None:
+    print(f"{NAME}: {msg}", flush=True)
+
+
+def run(cmd: list[str]) -> bool:
+    try:
+        r = subprocess.run(cmd, timeout=10, capture_output=True, text=True)
+        if r.returncode != 0:
+            log(f"{' '.join(cmd)} -> rc={r.returncode} {r.stderr.strip()[:150]}")
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log(f"{' '.join(cmd)} -> {e}")
+        return False
+
+
+def on_ac() -> bool:
+    """True while any power source currently feeds the machine."""
+    try:
+        for p in AC_DIR.iterdir():
+            try:
+                if (p / "online").exists() and int((p / "online").read_text()) == 1:
+                    return True
+                if ((p / "type").read_text().strip() == "Battery"
+                        and (p / "status").read_text().strip() != "Discharging"):
+                    return True
+            except (OSError, ValueError):
+                continue
+    except OSError as e:
+        log(f"power_supply read error: {e}")
+    return False  # unreadable -> conservative: treat as on battery
+
+
+def dpms(on: bool) -> None:
+    run(["hyprctl", "dispatch", "dpms", "on" if on else "off"])
+
+
+def suspend() -> None:
+    # logind's own Suspend(): honors sleep inhibitors and sleep hooks.
+    # Polkit-verified: an active local session user is authorized.
+    try:
+        import dbus as _d
+        sb = _d.SystemBus()
+        sb.get_object(LOGIN1, LOGIN1_PATH, introspect=False).Suspend(
+            False, dbus_interface=LOGIN1_IFACE)
+    except _d.DBusException as e:
+        log(f"suspend failed: {e.get_dbus_name()} {e.get_dbus_message()[:150]}")
+
+
+def handle_lid(closed: bool) -> None:
+    if closed:
+        if on_ac():
+            log("lid closed on AC -> dpms off")
+            dpms(False)
+        else:
+            log("lid closed on battery -> lock + suspend")
+            run(["loginctl", "lock-session"])
+            time.sleep(0.5)  # let the lock screen draw before freezing
+            suspend()
+    else:
+        log("lid opened -> dpms on")
+        dpms(True)
+
+
+def main() -> int:
+    DBusGMainLoop(set_as_default=True)
+    sb = dbus.SystemBus()
+
+    # Hold the inhibitor: the returned unix fd IS the inhibitor. Closing it
+    # releases. As long as we live, logind ignores lid switches.
+    raw = sb.get_object(LOGIN1, LOGIN1_PATH, introspect=False)
+    inh_fd = raw.Inhibit("handle-lid-switch", NAME,
+                         "custom lid policy (battery=suspend, ac=dpms off)",
+                         "block", dbus_interface=LOGIN1_IFACE)
+    log(f"handle-lid-switch inhibitor held (fd {inh_fd.take()})")
+
+    def on_props(iface, changed, _invalid):
+        if iface == LOGIN1_IFACE and "LidClosed" in changed:
+            handle_lid(bool(changed["LidClosed"]))
+
+    sb.add_signal_receiver(on_props, signal_name="PropertiesChanged",
+                           dbus_interface=PROPS, path=LOGIN1_PATH)
+
+    # After resume, events queued while frozen are lost. Re-apply the policy
+    # on wake: if the lid is still closed we re-enter it (AC: dpms off again,
+    # battery: we just woke from the lid-close suspend -> lid must be open,
+    # dpms on).
+    def on_sleep(starting):
+        if starting:
+            return
+        GLib.timeout_add(1500, lambda: (handle_lid(
+            bool(raw.Get(LOGIN1_IFACE, "LidClosed", dbus_interface=PROPS))),
+            False)[1])
+
+    sb.add_signal_receiver(on_sleep, signal_name="PrepareForSleep",
+                           dbus_interface=LOGIN1_IFACE, path=LOGIN1_PATH)
+
+    # Apply once at startup in case the lid is already closed.
+    lid = bool(raw.Get(LOGIN1_IFACE, "LidClosed", dbus_interface=PROPS))
+    if lid:
+        log("started with lid closed -> applying policy")
+        handle_lid(True)
+
+    log("running")
+    try:
+        GLib.MainLoop().run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            os.close(int(inh_fd))
+        except OSError:
+            pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

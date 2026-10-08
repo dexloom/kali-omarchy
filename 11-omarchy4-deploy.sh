@@ -245,9 +245,10 @@ fi
 
 # ── 3b2. Terminal shortcuts ───────────────────────────────────────────────
 # Paste onto Ctrl+V in QTerminal. Copy deliberately stays on Ctrl+Shift+C:
-# QTerminal has no "copy if there is a selection, else SIGINT" action, so
-# moving Copy to Ctrl+C would cost SIGINT. kitty does have that action and is
-# configured for it in config/kitty/kitty.conf.
+# SUPER+C / SUPER+V forward CTRL+SHIFT+C / CTRL+SHIFT+V to a focused terminal,
+# so both terminals have to be listening for exactly those chords. kitty gets
+# them from config/kitty/kitty.conf; qterminal keeps its shortcuts in an ini
+# this repo does not own, so only those two keys are set.
 if [[ -x $PROJECT/lib/configure-qterminal.py ]] && [[ -f $HOME/.config/qterminal.org/qterminal.ini ]]; then
     say "QTerminal shortcuts"
     python3 "$PROJECT/lib/configure-qterminal.py" 2>&1 | sed "s/^/  /"
@@ -346,6 +347,32 @@ if [[ -f $PROJECT/config/systemd/hyprland-session.target ]]; then
     link "$PROJECT/config/systemd/hyprland-session.target" \
          "$HOME/.config/systemd/user/hyprland-session.target"
     systemctl --user daemon-reload 2>/dev/null || true
+fi
+
+# ── 3b6. Lid policy: battery=suspend, AC=screen-off-only ──────────────────
+# logind cannot key the lid action to the power source here (its
+# HandleLidSwitchExternalPower is a static value), so a user daemon takes the
+# handle-lid-switch inhibitor (active sessions may, no polkit prompt) and
+# applies the policy itself over DBus: lock + Suspend() on battery, plain
+# dpms-off on AC, resync after wake via PrepareForSleep.
+#
+# The helper binary is linked with the other config/bin helpers in step 2; the
+# unit is what makes it a session service. WantedBy=hyprland-session.target so
+# it starts with the session and PartOf it so it dies with it. Idempotent.
+if [[ -f $PROJECT/config/systemd/lid-policy.service ]]; then
+    say "Lid policy service"
+    link "$PROJECT/config/systemd/lid-policy.service" \
+         "$HOME/.config/systemd/user/lid-policy.service"
+    systemctl --user daemon-reload 2>/dev/null || true
+    # enable creates the wants symlink idempotently; --now starts it only if
+    # the session target is up, which is the only place it can work anyway.
+    systemctl --user enable lid-policy.service >/dev/null 2>&1 || true
+    if systemctl --user is-active hyprland-session.target >/dev/null 2>&1; then
+        systemctl --user restart lid-policy.service >/dev/null 2>&1 || true
+        ok "lid-policy.service enabled and (re)started"
+    else
+        ok "lid-policy.service enabled (starts with the session target)"
+    fi
 fi
 
 # ── 3c. Hide Kali tools from the Apps launcher ────────────────────────────

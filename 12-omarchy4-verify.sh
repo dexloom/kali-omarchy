@@ -91,6 +91,52 @@ elif command -v voxtype >/dev/null 2>&1; then
     S "voxtype installed but no GPU pin (ggml will take device 0)"
 fi
 
+# Lid policy: the unit must be installed whenever the helper ships, and the
+# helper itself must parse. The daemon holds a handle-lid-switch inhibitor;
+# systemd-inhibit --list is the compositor-independent proof it is holding it.
+lid_helper="$HOME/.local/bin/lid-policy"
+if [[ -f $PROJECT/config/bin/lid-policy ]]; then
+    if [[ -x $lid_helper ]] && python3 -m py_compile "$lid_helper" 2>/dev/null; then
+        P "lid-policy helper installed and compiles"
+    else
+        F "lid-policy helper missing or does not compile ($lid_helper)"
+    fi
+    if [[ -e $HOME/.config/systemd/user/lid-policy.service ]]; then
+        if systemctl --user is-enabled lid-policy.service >/dev/null 2>&1; then
+            P "lid-policy.service installed and enabled"
+        else
+            F "lid-policy.service installed but not enabled"
+        fi
+    else
+        F "lid-policy.service not installed — lid would use logind defaults (AC: nothing happens)"
+    fi
+    if systemd-inhibit --list 2>/dev/null | grep -qE '^\s*lid-policy\s'; then
+        P "handle-lid-switch inhibitor is being held by lid-policy"
+    elif systemctl --user is-active lid-policy.service >/dev/null 2>&1; then
+        F "lid-policy runs but holds no inhibitor — logind will still suspend on AC"
+    else
+        S "lid-policy.service not running (no live session) — inhibitor check deferred"
+    fi
+fi
+
+# Brightness: the helper must exist and reach the compositor-independent bits
+# (device discovery). A full up/down step is deliberately NOT run here — the
+# verifier changes nothing.
+bsp="$HOME/.local/bin/brightness-step"
+if [[ -f $PROJECT/config/bin/brightness-step ]]; then
+    if [[ -x $bsp ]] && bash -n "$bsp" 2>/dev/null; then
+        P "brightness-step installed"
+    else
+        F "brightness-step missing or has a syntax error ($bsp)"
+    fi
+    dev="/sys/class/backlight/intel_backlight"
+    if [[ -r $dev/max_brightness ]]; then
+        P "backlight sysfs present ($(cat "$dev/max_brightness") max)"
+    else
+        S "no intel_backlight — desktop box? brightness helper is a no-op here"
+    fi
+fi
+
 # Chromium flags only survive in /etc/chromium.d/ — see the file's own header.
 if command -v chromium >/dev/null 2>&1; then
     if [[ -f /etc/chromium.d/vaapi ]]; then
@@ -490,6 +536,56 @@ if command -v hyprctl >/dev/null && hyprctl version >/dev/null 2>&1; then
     pgrep -f 'quickshell.*omarchy' >/dev/null \
         && P "omarchy shell process is up" \
         || F "omarchy shell not running (journalctl -t omarchy-shell -n 50)"
+
+    # Touchpad scroll factor: the deployed value must match the repo's, and the
+    # compositor must report it as set. Drift here looks like "scrolling got
+    # fast again for no reason".
+    want_sf=$(sed -n 's/^\s*scroll_factor = \([0-9.]*\).*/\1/p' "$PROJECT/config/hypr/hyprland.lua" | head -1)
+    got_sf=$(hyprctl getoption input:touchpad:scroll_factor 2>/dev/null | head -1)
+    set_sf=$(hyprctl getoption input:touchpad:scroll_factor 2>/dev/null | sed -n 's/^set: //p')
+    # hyprctl prints floats as 0.600000 while the repo writes 0.6 — compare
+    # numerically, not as strings.
+    if [[ -z $want_sf ]]; then
+        S "repo sets no touchpad scroll_factor"
+    elif [[ $set_sf == true ]] && awk -v a="${got_sf#float: }" -v b="$want_sf" 'BEGIN{exit !(a==b)}'; then
+        P "touchpad scroll_factor deployed ($want_sf)"
+    else
+        F "touchpad scroll_factor drift — repo wants $want_sf, compositor reports ${got_sf#float: } (set: $set_sf)"
+    fi
+
+    # Multimedia-key binds must drive the helpers that actually work on this
+    # box (brightnessctl 0.5.x cannot write the backlight: no uaccess tag, no
+    # logind fallback). A Lua bind appears in hyprctl binds only as the opaque
+    # dispatcher `__lua`, so the KEY ROUTING is checked in hyprctl and the
+    # COMMAND ROUTING in the live config file — neither alone catches a bind
+    # that lost its target.
+    for key in XF86MonBrightnessUp XF86MonBrightnessDown; do
+        hyprctl binds 2>/dev/null | grep -q "key: $key" \
+            && P "$key bound" \
+            || F "$key not bound — brightness keys dead"
+    done
+    if grep -q 'brightness-step up' "$main" && grep -q 'brightness-step down' "$main"; then
+        P "brightness keys drive brightness-step"
+    else
+        F "brightness binds do not call brightness-step — they drive the broken brightnessctl path"
+    fi
+
+    gwpctl=$(grep -c 'XF86Audio' "$main")
+    [[ $gwpctl -ge 4 ]] \
+        && P "audio keys present in config ($gwpctl binds)" \
+        || F "audio binds dropped from config ($gwpctl found)"
+
+    # Lid policy: while a session is live the service must be running and
+    # holding the inhibitor; that is the whole mechanism working.
+    if systemctl --user is-active lid-policy.service >/dev/null 2>&1; then
+        if systemd-inhibit --list 2>/dev/null | grep -qE '^\s*lid-policy\s'; then
+            P "lid-policy running and holding the lid inhibitor"
+        else
+            F "lid-policy active but NOT holding handle-lid-switch — logind will act on lid events itself"
+        fi
+    else
+        F "lid-policy.service not running in a live session — lid falls back to logind defaults"
+    fi
 
     # The compositor's own colours. Upstream loads the current theme's
     # hyprland.lua from default/hypr/omarchy.lua, a file this box never reaches

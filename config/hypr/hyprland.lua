@@ -251,12 +251,44 @@ hl.config({
 
         touchpad = {
             natural_scroll = false,
+            scroll_factor = 0.6, -- <1.0 = slower/softer two-finger scrolling (1.0 default)
         },
     },
 })
 
+-- Three-finger swipe = move FOCUS between windows in the current workspace,
+-- same as SUPER + LEFT/RIGHT. The gesture API has no named "focus" action, so
+-- this is a live Lua gesture. Only `update` events reliably carry e.delta, so
+-- the x-delta is accumulated there and read on finish; the dispatch itself goes
+-- through hl.exec_cmd + hyprctl (hl.dsp.* calls are not available inside
+-- gesture handlers). delta.x > 0 is a rightward swipe -> focus right.
+local swipe_dx = 0
 hl.gesture({
     fingers = 3,
+    direction = "horizontal",
+    action = {
+        start  = function(e) swipe_dx = 0 end,
+        update = function(e) swipe_dx = swipe_dx + e.delta.x end,
+        finish = function(e)
+            if math.abs(swipe_dx) < 30 then return end -- ignore tiny/accidental swipes
+            local dir = swipe_dx > 0 and "right" or "left"
+            hl.exec_cmd('hyprctl dispatch \'hl.dsp.focus({ direction = "' .. dir .. '" })\'')
+        end,
+    },
+})
+
+-- Swipe left = go to the PREVIOUS (lower-numbered) workspace, like macOS.
+-- workspace_swipe_invert defaults to true on touchpad, which makes a left
+-- swipe move to the NEXT workspace; false restores the natural direction.
+hl.config({
+    gestures = {
+        workspace_swipe_invert = false,
+    },
+})
+
+-- Four-finger swipe also cycles workspaces, same direction convention
+hl.gesture({
+    fingers = 4,
     direction = "horizontal",
     action = "workspace"
 })
@@ -277,10 +309,11 @@ local mainMod = "SUPER" -- Sets "Windows" key as main modifier
 
 -- Example binds, see https://wiki.hypr.land/Configuring/Basics/Binds/ for more
 hl.bind(mainMod .. " + Q", hl.dsp.exec_cmd(terminal), { description = "Terminal" })
-local closeWindowBind = hl.bind(mainMod .. " + C", hl.dsp.window.close(), { description = "Close window" })
+local closeWindowBind = hl.bind(mainMod .. " + W", hl.dsp.window.close(), { description = "Close window" })
 -- closeWindowBind:set_enabled(false)
-hl.bind(mainMod .. " + M", hl.dsp.exec_cmd("command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch 'hl.dsp.exit()'"), { description = "Exit Hyprland" })
+hl.bind(mainMod .. " + CTRL + M", hl.dsp.exec_cmd("command -v hyprshutdown >/dev/null 2>&1 && hyprshutdown || hyprctl dispatch 'hl.dsp.exit()'"), { description = "Exit Hyprland" })
 hl.bind(mainMod .. " + E", hl.dsp.exec_cmd(fileManager), { description = "File manager" })
+hl.bind(mainMod .. " + F", hl.dsp.exec_cmd("far2l --wayland"), { description = "FAR2L (WX-GUI)" })
 hl.bind(mainMod .. " + V", hl.dsp.window.float({ action = "toggle" }), { description = "Toggle window floating" })
 hl.bind(mainMod .. " + R", hl.dsp.exec_cmd(menu), { description = "Run launcher" })
 hl.bind(mainMod .. " + P", hl.dsp.window.pseudo(), { description = "Toggle window pseudotile" })
@@ -291,6 +324,10 @@ hl.bind(mainMod .. " + left",  hl.dsp.focus({ direction = "left" }), { descripti
 hl.bind(mainMod .. " + right", hl.dsp.focus({ direction = "right" }), { description = "Focus right" })
 hl.bind(mainMod .. " + up",    hl.dsp.focus({ direction = "up" }), { description = "Focus up" })
 hl.bind(mainMod .. " + down",  hl.dsp.focus({ direction = "down" }), { description = "Focus down" })
+
+-- Cycle workspaces relative to current with SUPER + ALT + arrow keys
+hl.bind(mainMod .. " + ALT + left",  hl.dsp.focus({ workspace = "e-1" }), { description = "Workspace left" })
+hl.bind(mainMod .. " + ALT + right", hl.dsp.focus({ workspace = "e+1" }), { description = "Workspace right" })
 
 -- Switch workspaces with mainMod + [0-9]
 -- Move active window to a workspace with mainMod + SHIFT + [0-9]
@@ -321,8 +358,10 @@ hl.bind("XF86AudioRaiseVolume", hl.dsp.exec_cmd("wpctl set-volume -l 1 @DEFAULT_
 hl.bind("XF86AudioLowerVolume", hl.dsp.exec_cmd("wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"), { locked = true, repeating = true, description = "Volume down" })
 hl.bind("XF86AudioMute",        hl.dsp.exec_cmd("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"), { locked = true, repeating = true, description = "Mute audio" })
 hl.bind("XF86AudioMicMute",     hl.dsp.exec_cmd("wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"), { locked = true, repeating = true, description = "Mute microphone" })
-hl.bind("XF86MonBrightnessUp",  hl.dsp.exec_cmd("brightnessctl -e4 -n2 set 5%+"), { locked = true, repeating = true, description = "Brightness up" })
-hl.bind("XF86MonBrightnessDown",hl.dsp.exec_cmd("brightnessctl -e4 -n2 set 5%-"), { locked = true, repeating = true, description = "Brightness down" })
+-- brightnessctl 0.5.x can't write the backlight (no uaccess ACL on this
+-- system, no logind fallback in that version) -> use logind DBus via helper.
+hl.bind("XF86MonBrightnessUp",  hl.dsp.exec_cmd("/home/fix/.local/bin/brightness-step up"),   { locked = true, repeating = true, description = "Brightness up" })
+hl.bind("XF86MonBrightnessDown",hl.dsp.exec_cmd("/home/fix/.local/bin/brightness-step down"), { locked = true, repeating = true, description = "Brightness down" })
 
 -- Requires playerctl
 hl.bind("XF86AudioNext",  hl.dsp.exec_cmd("playerctl next"), { locked = true, description = "Next track" })
