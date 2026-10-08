@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
-"""Point QTerminal's paste shortcut at Ctrl+V, keeping Ctrl+Shift+V too.
+"""Pin QTerminal's copy/paste shortcuts to the chords SUPER+C / SUPER+V send.
 
-WHY NOT Ctrl+C FOR COPY HERE
-----------------------------
-kitty has `copy_or_interrupt`: copy when there IS a selection, SIGINT when
-there is not. QTerminal has no such smart action — its Copy shortcut is a
-single static binding, so moving it to Ctrl+C would take SIGINT away from every
-shell running in QTerminal. On a box that runs long scans that is a bad trade,
-so Copy stays on Ctrl+Shift+C here and kitty (SUPER+K) is the terminal to use
-when you want full GUI-style bindings.
+Copy, paste and undo live on SUPER (see the CLIPBOARD section of
+config/hypr/omarchy4.lua). A compositor binding cannot copy anything itself --
+the application owns the selection -- so SUPER+C and SUPER+V forward
+CTRL+SHIFT+C and CTRL+SHIFT+V to a focused terminal. That only works if the
+terminal is listening for exactly those chords, which is what this sets.
 
-Paste is different: Ctrl+V in a terminal is only "quoted insert", which almost
-nobody uses, so moving paste onto it costs nothing.
+WHAT CHANGED, AND WHY
+---------------------
+This script used to move Paste onto Ctrl+V, on the reasoning that Ctrl+V in a
+terminal is only "quoted insert" and almost nobody uses it. The GUI chords are
+off the terminal entirely now: Ctrl+C is SIGINT, Ctrl+V is quoted insert and
+Ctrl+Z is SIGTSTP, with nothing overloading any of them. A box configured by
+the older version of this script still has Paste on Ctrl+V, so this moves it
+back -- leaving it would mean SUPER+V doing nothing in the box's default
+terminal.
+
+Both values are qterminal's own defaults. They are written out anyway, because
+the compositor binding depends on them and a default that moves would break
+SUPER+C / SUPER+V silently.
 
 Idempotent. Backs up qterminal.ini before the first change.
 """
@@ -36,7 +44,10 @@ section = "Shortcuts"
 if not cp.has_section(section):
     sys.exit(f"no [{section}] section in {INI}")
 
-want = {"Paste%20Clipboard": "Ctrl+V"}
+want = {
+    "Copy%20Selection": "Ctrl+Shift+C",
+    "Paste%20Clipboard": "Ctrl+Shift+V",
+}
 changes = {k: v for k, v in want.items()
            if cp.get(section, k, fallback=None) != v}
 
@@ -56,4 +67,5 @@ for k, v in changes.items():
 with INI.open("w", encoding="utf-8") as fh:
     cp.write(fh, space_around_delimiters=False)
 
-print("Copy stays on Ctrl+Shift+C so Ctrl+C keeps sending SIGINT.")
+print("Ctrl+C is SIGINT again; copy/paste are SUPER+C / SUPER+V.")
+print("Running qterminal windows keep the old shortcuts until restarted.")

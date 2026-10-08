@@ -55,7 +55,7 @@ end
 hl.env("XDG_CURRENT_DESKTOP", "Hyprland")
 hl.env("XDG_SESSION_TYPE", "wayland")
 hl.env("XDG_SESSION_DESKTOP", "Hyprland")
-hl.env("QT_QPA_PLATFORM", "wayland")
+hl.env("QT_QPA_PLATFORM", "wayland;xcb")
 
 -- Hardware video decode/encode (VA-API).
 --
@@ -327,6 +327,108 @@ hl.bind(mod .. " + L", hl.dsp.exec_cmd("omarchy-hyprland-workspace-layout-toggle
 -- Shell ------------------------------------------------------------------
 hl.bind(mod .. " + SHIFT + R", hl.dsp.exec_cmd("omarchy-restart-shell"),
     { description = "Restart Omarchy shell" })
+
+-------------------------------
+---- CLIPBOARD             ----
+-------------------------------
+-- Copy, paste and undo on SUPER, so CTRL+C, CTRL+V and CTRL+Z keep the
+-- meanings a terminal gives them: interrupt, literal-next, and suspend. Those
+-- three are the reason the GUI chords are a bad fit here — CTRL+C in
+-- particular cannot be both "copy" and SIGINT, and every workaround for that
+-- trades one of them away.
+--
+-- A compositor bind cannot copy anything by itself: the application owns the
+-- selection. So each of these forwards the chord the FOCUSED window actually
+-- understands, which is Omarchy's own approach in
+-- default/hypr/bindings/clipboard.lua. This box never loads that file — its
+-- Hyprland config is the example template plus this overlay, not Omarchy's Lua
+-- tree — so the mechanism is reproduced here.
+--
+-- The down/up split with a timer is upstream's workaround for Hyprland
+-- sometimes leaving injected key state stuck or repeating:
+--   https://github.com/hyprwm/Hyprland/discussions/14099
+local function send_chord(mods, key)
+    return function()
+        hl.dispatch(hl.dsp.send_key_state({ mods = mods, key = key, state = "down" }))
+        hl.timer(function()
+            hl.dispatch(hl.dsp.send_key_state({ mods = mods, key = key, state = "up" }))
+        end, { timeout = 50, type = "oneshot" })
+    end
+end
+
+-- Upstream singles terminals out with a window tag set in
+-- default/hypr/apps/terminals.lua, which is not loaded here either, so match
+-- the class directly. qterminal is added to upstream's list: Omarchy has no
+-- reason to know about it, and it is this box's default terminal.
+--
+-- A TABLE AND NOT A PATTERN, deliberately. Upstream keeps this list as one
+-- alternation — (Alacritty|kitty|foot|...) — but it hands that to Hyprland's
+-- window matcher, which takes real regular expressions. Lua's string.match
+-- takes LUA PATTERNS, and those have no alternation at all: "a|b" there matches
+-- the three literal characters. Carried across as a pattern, this test answered
+-- "not a terminal" for every window on the box, and SUPER+C duly sent CTRL+C —
+-- SIGINT — to the shell it was supposed to be copying from. Exact keys cannot
+-- fail that way, and the two Omarchy prefixes are spelled out below.
+--
+-- Lower-cased on both sides: Alacritty reports a capitalised class and some
+-- builds do not.
+local terminal_classes = {
+    ["alacritty"]             = true,
+    ["kitty"]                 = true,
+    ["com.mitchellh.ghostty"] = true,
+    ["foot"]                  = true,
+    ["org.codeberg.dnkl.foot"] = true,
+    ["wezterm"]               = true,
+    ["qterminal"]             = true,
+}
+
+local function focused_is_terminal()
+    local w = hl.get_active_window()
+    if not w then return false end
+    local class = (w.class or ""):lower()
+    if terminal_classes[class] then return true end
+    -- Omarchy's own terminal windows (org.omarchy.btop, org.omarchy.terminal)
+    -- and its TUI wrappers (TUI.float, ...) are terminals under a prefix.
+    return class:sub(1, 12) == "org.omarchy." or class:sub(1, 4) == "tui."
+end
+
+-- Two chords per action: what an ordinary application expects, and what a
+-- terminal expects. Passing nil for the terminal chord means "a terminal has
+-- no equivalent, send nothing" rather than sending something harmful.
+local function clipboard_key(app_mods, app_key, term_mods, term_key)
+    return function()
+        if focused_is_terminal() then
+            if term_mods then send_chord(term_mods, term_key)() end
+        else
+            send_chord(app_mods, app_key)()
+        end
+    end
+end
+
+-- SUPER+V was "toggle window floating" in the example config near the top of
+-- hyprland.lua. Hyprland STACKS binds — a second bind on the same chord does
+-- not replace the first, both fire — so the old one has to go or SUPER+V would
+-- paste AND float at once. This overlay is required last, which is what makes
+-- the removal reachable from here instead of needing an edit to the base
+-- config. pcall because a base config that never bound SUPER+V is not an error
+-- worth losing every bind below to.
+--
+-- BEFORE the bindings below, not after: unbind takes the chord, not one
+-- handler, so running it later removes the paste binding along with the float
+-- one and leaves SUPER+V doing nothing at all.
+pcall(hl.unbind, mod .. " + V")
+hl.bind(mod .. " + X", hl.dsp.window.float({ action = "toggle" }),
+    { description = "Toggle window floating" })
+
+hl.bind(mod .. " + C", clipboard_key("CTRL", "C", "CTRL SHIFT", "C"),
+    { description = "Copy" })
+hl.bind(mod .. " + V", clipboard_key("CTRL", "V", "CTRL SHIFT", "V"),
+    { description = "Paste" })
+-- No terminal chord for undo, deliberately. CTRL+Z in a terminal is SIGTSTP —
+-- the very behaviour these bindings exist to protect — and a terminal has no
+-- undo to reach instead, so in a terminal this does nothing at all.
+hl.bind(mod .. " + Z", clipboard_key("CTRL", "Z", nil, nil),
+    { description = "Undo" })
 
 -------------------------------
 ---- CURRENT THEME          ----
